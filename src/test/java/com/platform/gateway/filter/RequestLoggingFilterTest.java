@@ -39,6 +39,7 @@ class RequestLoggingFilterTest {
             @Override
             public Mono<Void> filter(ServerWebExchange ex) {
                 assertThat(ex.getRequest().getHeaders().getFirst("X-Request-Id")).isEqualTo("fixed-123");
+                assertThat(ex.getRequest().getHeaders().get("X-Request-Id")).hasSize(1);
                 return Mono.empty();
             }
         }).block();

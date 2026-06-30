@@ -26,7 +26,7 @@ public class RequestLoggingFilter implements GlobalFilter, Ordered {
         }
         final String id = requestId;
         ServerWebExchange mutated = exchange.mutate()
-                .request(r -> r.header(REQUEST_ID, id))
+                .request(r -> r.headers(h -> h.set(REQUEST_ID, id)))
                 .build();
         log.info("{} {} ({})",
                 mutated.getRequest().getMethod(),
