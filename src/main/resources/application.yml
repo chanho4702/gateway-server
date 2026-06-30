@@ -7,6 +7,13 @@ spring:
     gateway:
       server:
         webflux:
+          globalcors:
+            cors-configurations:
+              '[/**]':
+                allowedOrigins: "${CORS_ALLOWED_ORIGIN:http://localhost:5173}"
+                allowedMethods: [GET, POST, PUT, DELETE, OPTIONS]
+                allowedHeaders: "*"
+                allowCredentials: true
           routes:
             # board-service — 게시판/댓글. No StripPrefix(경로 그대로 전달).
             - id: board
