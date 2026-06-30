@@ -1,0 +1,39 @@
+server:
+  port: 8000
+spring:
+  application:
+    name: gateway-server
+  cloud:
+    gateway:
+      server:
+        webflux:
+          routes:
+            # board-service — 게시판/댓글. No StripPrefix(경로 그대로 전달).
+            - id: board
+              uri: ${BOARD_SERVICE_URI:http://localhost:9100}
+              predicates:
+                - Path=/api/board/**
+            # auth-server — OIDC 로그인 리다이렉트 흐름
+            - id: auth-oauth2
+              uri: ${AUTH_SERVER_URI:http://localhost:9000}
+              predicates:
+                - Path=/oauth2/**
+            - id: auth-login
+              uri: ${AUTH_SERVER_URI:http://localhost:9000}
+              predicates:
+                - Path=/login/**
+            # auth-server — refresh/logout
+            - id: auth-api
+              uri: ${AUTH_SERVER_URI:http://localhost:9000}
+              predicates:
+                - Path=/api/auth/**
+            # auth-server — JWKS 공개키
+            - id: auth-jwks
+              uri: ${AUTH_SERVER_URI:http://localhost:9000}
+              predicates:
+                - Path=/.well-known/**
+            # auth-server — 자체 JWT 검증 사용자정보
+            - id: auth-me
+              uri: ${AUTH_SERVER_URI:http://localhost:9000}
+              predicates:
+                - Path=/api/me
