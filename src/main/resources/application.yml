@@ -14,15 +14,8 @@ spring:
           httpclient:
             connect-timeout: 3000 # ms — 다운스트림 연결 3초
             response-timeout: 10s # 응답 전체 10초 (무한대기 방지)
-          globalcors:
-            cors-configurations:
-              '[/**]':
-                # allowCredentials(쿠키)와 함께 쓰므로 오리진은 반드시 구체 값 유지 — '*' 금지.
-                allowedOrigins: "${CORS_ALLOWED_ORIGIN:http://localhost:5173}"
-                allowedMethods: [GET, POST, PUT, DELETE, OPTIONS]
-                allowedHeaders: "*"
-                allowCredentials: true
-                maxAge: 3600 # preflight 캐시(초) — OPTIONS 왕복 절감
+          # CORS는 SecurityConfig의 CorsConfigurationSource 빈이 단일 소스
+          # (Security 401 응답에도 CORS 헤더가 붙어야 프론트 refresh 흐름이 살기 때문).
           routes:
             # board-service — 게시판/댓글. No StripPrefix(경로 그대로 전달).
             # CB(바깥) + GET 한정 Retry(안쪽) — 불능 시 /fallback/board 503.
@@ -82,3 +75,10 @@ spring:
               uri: ${AUTH_SERVER_URI:http://localhost:9000}
               predicates:
                 - Path=/api/me
+
+platform:
+  # auth-server 발급 자체 AT의 검증 계약 — auth/board와 동일 env 이름.
+  jwks-uri: ${AUTH_JWKS_URI:http://localhost:9000/.well-known/jwks.json}
+  issuer: ${PLATFORM_ISSUER:http://localhost:9000}
+  audience: ${PLATFORM_AUDIENCE:platform-api}
+  cors-allowed-origin: ${CORS_ALLOWED_ORIGIN:http://localhost:5173}
