@@ -3,6 +3,10 @@ server:
 spring:
   application:
     name: gateway-server
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
   cloud:
     gateway:
       server:
@@ -25,20 +29,38 @@ spring:
               uri: ${BOARD_SERVICE_URI:http://localhost:9100}
               predicates:
                 - Path=/api/board/**
-            # auth-server — OIDC 로그인 리다이렉트 흐름
+            # auth-server — OIDC 로그인 리다이렉트 흐름 (IP당 10 req/s, burst 20)
             - id: auth-oauth2
               uri: ${AUTH_SERVER_URI:http://localhost:9000}
               predicates:
                 - Path=/oauth2/**
+              filters:
+                - name: RequestRateLimiter
+                  args:
+                    redis-rate-limiter.replenishRate: 10
+                    redis-rate-limiter.burstCapacity: 20
+                    key-resolver: "#{@ipKeyResolver}"
             - id: auth-login
               uri: ${AUTH_SERVER_URI:http://localhost:9000}
               predicates:
                 - Path=/login/**
-            # auth-server — refresh/logout
+              filters:
+                - name: RequestRateLimiter
+                  args:
+                    redis-rate-limiter.replenishRate: 10
+                    redis-rate-limiter.burstCapacity: 20
+                    key-resolver: "#{@ipKeyResolver}"
+            # auth-server — refresh/logout (브루트포스 방어: IP당 5 req/s, burst 10)
             - id: auth-api
               uri: ${AUTH_SERVER_URI:http://localhost:9000}
               predicates:
                 - Path=/api/auth/**
+              filters:
+                - name: RequestRateLimiter
+                  args:
+                    redis-rate-limiter.replenishRate: 5
+                    redis-rate-limiter.burstCapacity: 10
+                    key-resolver: "#{@ipKeyResolver}"
             # auth-server — JWKS 공개키
             - id: auth-jwks
               uri: ${AUTH_SERVER_URI:http://localhost:9000}
