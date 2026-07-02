@@ -25,10 +25,21 @@ spring:
                 maxAge: 3600 # preflight 캐시(초) — OPTIONS 왕복 절감
           routes:
             # board-service — 게시판/댓글. No StripPrefix(경로 그대로 전달).
+            # CB(바깥) + GET 한정 Retry(안쪽) — 불능 시 /fallback/board 503.
             - id: board
               uri: ${BOARD_SERVICE_URI:http://localhost:9100}
               predicates:
                 - Path=/api/board/**
+              filters:
+                - name: CircuitBreaker
+                  args:
+                    name: board
+                    fallbackUri: forward:/fallback/board
+                - name: Retry
+                  args:
+                    retries: 2
+                    methods: GET # 멱등 GET만 — POST 재시도는 중복 생성 사고
+                    series: SERVER_ERROR
             # auth-server — OIDC 로그인 리다이렉트 흐름 (IP당 10 req/s, burst 20)
             - id: auth-oauth2
               uri: ${AUTH_SERVER_URI:http://localhost:9000}
