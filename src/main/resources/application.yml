@@ -7,6 +7,9 @@ spring:
     gateway:
       server:
         webflux:
+          httpclient:
+            connect-timeout: 3000 # ms — 다운스트림 연결 3초
+            response-timeout: 10s # 응답 전체 10초 (무한대기 방지)
           globalcors:
             cors-configurations:
               '[/**]':
