@@ -33,6 +33,9 @@ spring:
                     retries: 2
                     methods: GET # 멱등 GET만 — POST 재시도는 중복 생성 사고
                     series: SERVER_ERROR
+                    # 연결 실패만 재시도 — 기본값(IOException+TimeoutException)이면
+                    # 타임아웃까지 재시도해 fallback 지연이 3배로 증폭된다.
+                    exceptions: java.io.IOException
             # auth-server — OIDC 로그인 리다이렉트 흐름 (IP당 10 req/s, burst 20)
             - id: auth-oauth2
               uri: ${AUTH_SERVER_URI:http://localhost:9000}
@@ -70,11 +73,21 @@ spring:
               uri: ${AUTH_SERVER_URI:http://localhost:9000}
               predicates:
                 - Path=/.well-known/**
-            # auth-server — 자체 JWT 검증 사용자정보
+            # auth-server — 자체 JWT 검증 사용자정보.
+            # rate limiter 없음(의도): 무토큰/위조는 Security가 401로 조기 차단하고
+            # 유효 토큰 소지자만 도달하므로 인증 경로 3개와 달리 브루트포스 표면이 아님.
             - id: auth-me
               uri: ${AUTH_SERVER_URI:http://localhost:9000}
               predicates:
                 - Path=/api/me
+
+resilience4j:
+  timelimiter:
+    instances:
+      board:
+        # CircuitBreaker의 총 예산 캡. 미설정 시 Resilience4j 기본 1s가 적용되어
+        # 1초 넘는 정상 응답까지 fallback 503으로 잘린다(httpclient response-timeout 10s보다 크게).
+        timeout-duration: 11s
 
 platform:
   # auth-server 발급 자체 AT의 검증 계약 — auth/board와 동일 env 이름.
