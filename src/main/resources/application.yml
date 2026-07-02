@@ -10,10 +10,12 @@ spring:
           globalcors:
             cors-configurations:
               '[/**]':
+                # allowCredentials(쿠키)와 함께 쓰므로 오리진은 반드시 구체 값 유지 — '*' 금지.
                 allowedOrigins: "${CORS_ALLOWED_ORIGIN:http://localhost:5173}"
                 allowedMethods: [GET, POST, PUT, DELETE, OPTIONS]
                 allowedHeaders: "*"
                 allowCredentials: true
+                maxAge: 3600 # preflight 캐시(초) — OPTIONS 왕복 절감
           routes:
             # board-service — 게시판/댓글. No StripPrefix(경로 그대로 전달).
             - id: board

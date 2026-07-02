@@ -29,6 +29,41 @@ class RequestLoggingFilterTest {
     }
 
     @Test
+    void regeneratesRequestIdWhenFormatIsUnsafe() {
+        // 클라이언트가 준 값에 특수문자가 섞이면(로그 인젝션/헤더 오염) 신뢰하지 않고 재발급한다.
+        RequestLoggingFilter filter = new RequestLoggingFilter();
+        MockServerWebExchange exchange = MockServerWebExchange.from(
+                MockServerHttpRequest.get("/api/board/posts")
+                        .header("X-Request-Id", "bad id;\"><script>").build());
+
+        filter.filter(exchange, new GatewayFilterChain() {
+            @Override
+            public Mono<Void> filter(ServerWebExchange ex) {
+                String id = ex.getRequest().getHeaders().getFirst("X-Request-Id");
+                assertThat(id).isNotBlank().matches("[A-Za-z0-9._-]{1,64}");
+                return Mono.empty();
+            }
+        }).block();
+    }
+
+    @Test
+    void regeneratesRequestIdWhenTooLong() {
+        RequestLoggingFilter filter = new RequestLoggingFilter();
+        MockServerWebExchange exchange = MockServerWebExchange.from(
+                MockServerHttpRequest.get("/api/board/posts")
+                        .header("X-Request-Id", "a".repeat(65)).build());
+
+        filter.filter(exchange, new GatewayFilterChain() {
+            @Override
+            public Mono<Void> filter(ServerWebExchange ex) {
+                String id = ex.getRequest().getHeaders().getFirst("X-Request-Id");
+                assertThat(id).isNotBlank().hasSizeLessThanOrEqualTo(64);
+                return Mono.empty();
+            }
+        }).block();
+    }
+
+    @Test
     void preservesExistingRequestId() {
         RequestLoggingFilter filter = new RequestLoggingFilter();
         MockServerWebExchange exchange = MockServerWebExchange.from(
