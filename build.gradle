@@ -18,8 +18,11 @@ dependencyManagement {
     }
 }
 dependencies {
+    // 게이트 웨이 본체 (라우팅 필터)
     implementation 'org.springframework.cloud:spring-cloud-starter-gateway-server-webflux'
-    // RequestRateLimiter(Redis) — Redis 부재 시 fail-open(요청 통과)
+    // 서비스 디스커버리 — lb:// 라우트 해석(LoadBalancer 전이 포함) + 게이트웨이 자기등록
+    implementation 'org.springframework.cloud:spring-cloud-starter-netflix-eureka-client'
+    // RequestRateLimiter(Redis) — Redis 부재 시 fail-open(요청 통과) 토큰 버킷 저장소
     implementation 'org.springframework.boot:spring-boot-starter-data-redis-reactive'
     // CircuitBreaker 필터 (Resilience4j reactor)
     implementation 'org.springframework.cloud:spring-cloud-starter-circuitbreaker-reactor-resilience4j'

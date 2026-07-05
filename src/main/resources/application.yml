@@ -20,7 +20,7 @@ spring:
             # board-service — 게시판/댓글. No StripPrefix(경로 그대로 전달).
             # CB(바깥) + GET 한정 Retry(안쪽) — 불능 시 /fallback/board 503.
             - id: board
-              uri: ${BOARD_SERVICE_URI:http://localhost:9100}
+              uri: ${BOARD_SERVICE_URI:lb://board-service}
               predicates:
                 - Path=/api/board/**
               filters:
@@ -38,7 +38,7 @@ spring:
                     exceptions: java.io.IOException
             # auth-server — OIDC 로그인 리다이렉트 흐름 (IP당 10 req/s, burst 20)
             - id: auth-oauth2
-              uri: ${AUTH_SERVER_URI:http://localhost:9000}
+              uri: ${AUTH_SERVER_URI:lb://auth-server}
               predicates:
                 - Path=/oauth2/**
               filters:
@@ -48,7 +48,7 @@ spring:
                     redis-rate-limiter.burstCapacity: 20
                     key-resolver: "#{@ipKeyResolver}"
             - id: auth-login
-              uri: ${AUTH_SERVER_URI:http://localhost:9000}
+              uri: ${AUTH_SERVER_URI:lb://auth-server}
               predicates:
                 - Path=/login/**
               filters:
@@ -59,7 +59,7 @@ spring:
                     key-resolver: "#{@ipKeyResolver}"
             # auth-server — refresh/logout (브루트포스 방어: IP당 5 req/s, burst 10)
             - id: auth-api
-              uri: ${AUTH_SERVER_URI:http://localhost:9000}
+              uri: ${AUTH_SERVER_URI:lb://auth-server}
               predicates:
                 - Path=/api/auth/**
               filters:
@@ -70,16 +70,21 @@ spring:
                     key-resolver: "#{@ipKeyResolver}"
             # auth-server — JWKS 공개키
             - id: auth-jwks
-              uri: ${AUTH_SERVER_URI:http://localhost:9000}
+              uri: ${AUTH_SERVER_URI:lb://auth-server}
               predicates:
                 - Path=/.well-known/**
             # auth-server — 자체 JWT 검증 사용자정보.
             # rate limiter 없음(의도): 무토큰/위조는 Security가 401로 조기 차단하고
             # 유효 토큰 소지자만 도달하므로 인증 경로 3개와 달리 브루트포스 표면이 아님.
             - id: auth-me
-              uri: ${AUTH_SERVER_URI:http://localhost:9000}
+              uri: ${AUTH_SERVER_URI:lb://auth-server}
               predicates:
                 - Path=/api/me
+
+eureka:
+  client:
+    service-url:
+      defaultZone: ${EUREKA_URI:http://localhost:8761/eureka}
 
 resilience4j:
   timelimiter:

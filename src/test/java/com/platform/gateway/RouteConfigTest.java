@@ -26,6 +26,20 @@ class RouteConfigTest {
     }
 
     @Test
+    void routesResolveViaServiceDiscoveryByDefault() {
+        // env 미주입 시 기본값이 lb:// — 유레카 레지스트리에서 인스턴스를 찾는다.
+        // (BOARD_SERVICE_URI/AUTH_SERVER_URI env는 테스트 스텁 주입·유레카 없는 환경용 시임으로 유지)
+        List<org.springframework.cloud.gateway.route.Route> routes =
+                routeLocator.getRoutes().collectList().block();
+        var board = routes.stream().filter(r -> r.getId().equals("board")).findFirst().orElseThrow();
+        assertThat(board.getUri()).hasScheme("lb").hasHost("board-service");
+        for (String id : List.of("auth-oauth2", "auth-login", "auth-api", "auth-jwks", "auth-me")) {
+            var route = routes.stream().filter(r -> r.getId().equals(id)).findFirst().orElseThrow();
+            assertThat(route.getUri()).as("route %s", id).hasScheme("lb").hasHost("auth-server");
+        }
+    }
+
+    @Test
     void authRoutesHaveRateLimiterFilter() {
         List<org.springframework.cloud.gateway.route.Route> routes =
                 routeLocator.getRoutes().collectList().block();
