@@ -40,7 +40,8 @@ public class SecurityConfig {
                         .pathMatchers(HttpMethod.OPTIONS).permitAll() // preflight
                         .pathMatchers("/oauth2/**", "/login/**", "/api/auth/**",
                                 "/.well-known/**", "/fallback/**").permitAll()
-                        .pathMatchers(HttpMethod.GET, "/api/board/posts/**").permitAll()
+                        //인증 관련 경로 + /fallback/** 허용 — fallback을 안 열어두면 서킷브레이커가 forward한 내부 요청이 401로 죽는 미묘한 버그가 생김
+                        .pathMatchers(HttpMethod.GET, "/api/board/posts/**").permitAll() // 비 로그인 게시글 열람
                         .anyExchange().authenticated())
                 .oauth2ResourceServer(oauth2 -> oauth2.jwt(Customizer.withDefaults()));
         return http.build();
@@ -57,6 +58,10 @@ public class SecurityConfig {
                 new AudienceValidator(audience)));
         return decoder;
     }
+    //  auth-server의 JWKS 엔드포인트에서 공개키를 받아 서명을 검증하고,
+    //  기본 검증(만료+issuer)에 AudienceValidator를 체인으로 추가합니다.
+    //  AudienceValidator.java가 필요한 이유: 서명이 유효해도 그 토큰이 이 API를 위해 발급된 것인지는 aud 클레임으로 확인해야 합니다.
+    //  같은 IdP가 여러 서비스용 토큰을 발급할 때, A 서비스용 토큰으로 B 서비스를 호출하는 토큰 혼용(confused deputy)을 막는 장치입니다.
 
     /** CORS 단일 소스 — yml globalcors 대신 이 빈. credentials와 함께 쓰므로 오리진은 구체 값('*' 금지). */
     @Bean
