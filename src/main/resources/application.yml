@@ -85,6 +85,12 @@ spring:
               uri: ${AUTH_SERVER_URI:lb://auth-server}
               predicates:
                 - Path=/api/me
+            # org-service — 조직/팀/권한 관리 REST (Wave A).
+            # dev: lb://(Eureka) · docker: ORG_SERVICE_URI로 DNS 직결 (Eureka 프로필 분기 1호)
+            - id: org
+              uri: ${ORG_SERVICE_URI:lb://org-service}
+              predicates:
+                - Path=/api/org/**
 
 eureka:
   client:
