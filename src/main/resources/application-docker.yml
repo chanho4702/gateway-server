@@ -1,0 +1,9 @@
+# docker 프로필 전용 — 컨테이너 stdout을 Grafana Alloy가 긁어 Loki로 보낸다.
+# 사람이 읽는 평문 대신 기계가 파싱하는 ECS JSON 한 줄/로그로 출력.
+# (로컬 dev = 프로필 없음 → application.yml 평문 유지. Spring Boot 4 네이티브 기능, 추가 의존성 0.)
+# RequestLoggingFilter의 addKeyValue(status/latencyMs/requestId/path)가 JSON 최상위 필드로 실려
+# Grafana에서 `| json | status=503`, `| json | latencyMs>1000` 같은 질의가 가능해진다.
+logging:
+  structured:
+    format:
+      console: ecs
