@@ -91,6 +91,11 @@ spring:
               uri: ${ORG_SERVICE_URI:lb://org-service}
               predicates:
                 - Path=/api/org/**
+            # wiki-backend — 위키 REST (Wave B). dev: lb:// · docker: WIKI_SERVICE_URI DNS 직결
+            - id: wiki
+              uri: ${WIKI_SERVICE_URI:lb://wiki-backend}
+              predicates:
+                - Path=/api/wiki/**
 
 eureka:
   client:
