@@ -1,0 +1,16 @@
+# dev 프로필 — 도커 풀스택과 나란히 실행 (포트 +10000). 단일 진입점 :18000.
+# 라우트는 lb://(dev eureka 디스커버리)로 dev 백엔드에 자동 연결 — uri 하드코딩 불필요.
+# Redis 논리 DB 1로 레이트리미터 키를 도커(db0)와 분리. JWKS는 dev auth(:19000).
+# CORS/issuer/audience 기본값(5173·9000·platform-api) 유지 — myFront dev도 5173.
+server:
+  port: 18000
+spring:
+  data:
+    redis:
+      database: 1
+eureka:
+  client:
+    service-url:
+      defaultZone: http://localhost:18761/eureka
+platform:
+  jwks-uri: http://localhost:19000/.well-known/jwks.json
