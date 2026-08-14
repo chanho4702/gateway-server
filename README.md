@@ -5,30 +5,36 @@
 
 > **이중 검증 원칙**: 게이트웨이의 JWT 검증은 **1차 방어**(쓰레기 트래픽 조기 401)일 뿐, 각 다운스트림 서비스의 자체 JWKS 검증(**최종 방어**)을 대체하지 않는다 — zero-trust.
 
-> 별도 git repo: `github.com/chanho4702/gateway-server` (브랜치 `main`). 우산 repo(MSA_TEMPLATE)에서는 gitignore 됨.
+> 별도 git repo: `github.com/chanho4702/gateway-server` (브랜치 `master`). 우산 repo(`chanho4702/infra-settings`)에서는 gitignore 됨.
 
 ---
 
 ## 역할 / 아키텍처
 
 ```
-  myFront(:5173) ──▶ gateway-server(:8000) ──┬──▶ lb://auth-server    JWT발급·JWKS·/api/me
-   (base URL 1개)    Spring Cloud Gateway     │
-                     라우팅 / CORS / 로깅      └──▶ lb://board-service  /api/board/**
-                     rate limit / CB / JWT 1차검증        ▲
-                     X-Forwarded 신뢰(trusted-proxies)
-                     서비스 디스커버리(lb://) ──── eureka-server(:8761) 레지스트리
-                     infra: Keycloak(:8080) · Postgres(:5433) · Redis(:6379)
+  브라우저 ─▶ nginx(:80) ─▶ gateway-server(:8000) ─┬─▶ auth-server(:9000)     JWT발급·JWKS·/api/me
+   3-SPA 단일 오리진        Spring Cloud Gateway    ├─▶ board-service(:9100)   /api/board/**
+                           라우팅 / CORS / 로깅     ├─▶ org-service(:9130)     /api/org/**
+                           rate limit / CB          ├─▶ wiki-backend(:9110)    /api/wiki/**
+                           JWT 1차검증(Security)     └─▶ search-service(:9140)  /api/search/**
+                           X-Forwarded 신뢰(trusted-proxies)
+                           lb:// 디스커버리 ── eureka-server(:8761)  auth·board
+                           *_SERVICE_URI 로 DNS 직결 ── org·wiki·search
+                           infra: Keycloak(:8080) · Postgres(:5433) · Redis(:6379)
 ```
 
 - **CORS 중앙화** — 브라우저(myFront:5173)의 모든 요청이 게이트웨이를 통과하므로 CORS는 여기 한 곳에서만 처리한다. auth-server와 board-service는 CORS를 설정하지 않는다.
-- **JWT 조기차단(1차 방어)** — 보호 경로(`POST /api/board/**`, `/api/me` 등)의 무토큰/위조/만료 토큰을 다운스트림에 닿기 전에 401로 차단. JWKS + issuer + audience 검증(board-service와 동일 계약). 공개 경로(`GET /api/board/posts/**`, OIDC 흐름, `/api/auth/**`, JWKS, `/fallback/**`)는 통과. **경로 정책은 board-service SecurityConfig와 동기 유지할 것.** 유효 토큰의 `Authorization` 헤더는 그대로 다운스트림에 전달된다.
+- **JWT 조기차단(1차 방어)** — 정책은 `anyExchange().authenticated()`이고 공개 경로만 열어 둔다. 즉 **명시적으로 열지 않은 경로는 전부 인증 필수**다. 무토큰/위조/만료 토큰은 다운스트림에 닿기 전에 401로 차단된다. JWKS + issuer + audience 검증(board-service와 동일 계약). 유효 토큰의 `Authorization` 헤더는 그대로 다운스트림에 전달된다.
+  - 공개(permitAll): OPTIONS 프리플라이트 · `/oauth2/**` · `/login/**` · `/api/auth/**` · `/.well-known/**` · `/fallback/**` · `GET /api/board/posts/**`
+  - 인증 필수: `/api/me` · `/api/org/**` · `/api/wiki/**` · **`/api/search/**`**(GraphQL·재색인 모두) · 그 외 전부
+  - **경로 정책은 board-service SecurityConfig와 동기 유지할 것.** `/fallback/**`을 열어 두지 않으면 서킷브레이커가 forward한 내부 요청이 401로 죽는다.
 - **X-Forwarded 프록시 처리(trusted-proxies)** — nginx 통합배포처럼 게이트웨이 앞에 리버스 프록시를 두면, SCG 4.1+ 보안 기본값은 신뢰하지 않는 `X-Forwarded-*` 헤더를 제거한다. 그러면 nginx가 붙인 `X-Forwarded-Host`(localhost)가 auth-server에 도달하지 못해 OIDC `redirect_uri`가 eureka IP(:9000)로 구성되고 Keycloak이 거부한다. `trusted-proxies` 정규식으로 루프백 + 사설대역(도커 NAT 포함)을 신뢰하도록 열어 이 문제를 해결한다(아래 전용 섹션 참고).
-- **Rate limiting** — 인증 경로 IP 기준(`/api/auth/**` 5 req/s burst 10, `/oauth2/**`·`/login/**` 10/20). Redis 백엔드, **Redis 부재 시 fail-open**(요청 통과)이라 dev에서 Redis 없이도 동작 — 단 이때 해당 경로 요청마다 `Error calling rate limiter lua` ERROR 로그가 남는 것은 정상. IP 키는 게이트웨이가 클라이언트에 직접 노출되는 전제 — LB/프록시 뒤에 두면 `XForwardedRemoteAddressResolver` 기반 KeyResolver로 교체할 것.
+- **Rate limiting** — IP 기준. 인증 경로(`/api/auth/**` 5 req/s burst 10, `/oauth2/**`·`/login/**` 10/20)와 **검색 경로(`/api/search/**` 5/15)**. Redis 백엔드, **Redis 부재 시 fail-open**(요청 통과)이라 dev에서 Redis 없이도 동작 — 단 이때 해당 경로 요청마다 `Error calling rate limiter lua` ERROR 로그가 남는 것은 정상. **IP 키는 nginx 1홉 뒤의 실 클라이언트 IP**다 — `RateLimitConfig`가 `XForwardedRemoteAddressResolver.maxTrustedIndex(1)`로 `X-Forwarded-For`의 맨 오른쪽(nginx가 붙인 값)만 채택한다. `getRemoteAddress()`를 그대로 쓰면 nginx/도커 NAT IP 하나로 고정돼 전 클라이언트가 단일 버킷을 공유한다(정상 사용자 상호 차단 + 공격자 격리 불가). 신뢰 홉이 1개라 클라이언트가 XFF를 위조해도 무력하다.
 - **회복탄력성** — 전역 connect 3s/response 10s 타임아웃. board 라우트에 CircuitBreaker(+멱등 GET 한정 Retry 2회, 연결 실패=`IOException`만) → 불능 시 `/fallback/board` 503 `{"error":"board_unavailable"}`. Resilience4j TimeLimiter는 board 인스턴스에 11s로 명시(미설정 시 기본 1s가 정상 응답까지 잘라버림).
 - **요청 로깅 / traceId** — `GlobalFilter`가 매 요청의 `X-Request-Id`를 보장(없거나 형식 불량이면 UUID 재발급)하고 다운스트림으로 전파한 뒤 `METHOD 경로 (requestId)` 한 줄을 로깅한다.
-- **경로 불변(No StripPrefix)** — 클라이언트가 보낸 경로 = 서비스가 받는 경로. 서비스 입장에서 게이트웨이 유무에 따라 경로가 달라지지 않는다.
-- **서비스 디스커버리(lb://)** — 라우트 uri 기본값이 `lb://auth-server`/`lb://board-service`. 유레카 레지스트리(:8761)에서 인스턴스를 찾아 클라이언트 사이드 로드밸런싱(라운드로빈)한다. 다운스트림 주소·포트·대수가 바뀌어도 게이트웨이 설정은 불변. 유레카 서버가 잠깐 죽어도 로컬 캐시(30s 갱신)로 라우팅은 유지된다. `AUTH_SERVER_URI`/`BOARD_SERVICE_URI` env를 주입하면 유레카 없이 직접 URI로도 동작(테스트·탈출구).
+- **경로 불변(No StripPrefix) — 단 `search` 라우트는 예외** — 원칙은 "클라이언트가 보낸 경로 = 서비스가 받는 경로"다. 서비스 입장에서 게이트웨이 유무에 따라 경로가 달라지지 않는다. **search-service만 `StripPrefix=2`로 접두사를 뗀다** — GraphQL은 단일 URL(`/graphql`)이라 서비스 쪽에 `/api/search` 접두사를 붙일 자리가 없고, 관리 REST도 그에 맞춰 `/admin/reindex`로 통일했기 때문이다(아래 라우팅 표).
+- **서비스 디스커버리 — 라우트마다 다르다(하이브리드)** — 라우트 uri 기본값은 전부 `lb://<서비스명>`이고, 유레카 레지스트리(:8761)에서 인스턴스를 찾아 클라이언트 사이드 로드밸런싱(라운드로빈)한다. 유레카 서버가 잠깐 죽어도 로컬 캐시(30s 갱신)로 라우팅은 유지된다.
+  **컨테이너 배포판도 유레카를 쓴다 — 다만 전부는 아니다.** `auth-server`·`board-service`는 컨테이너에서도 유레카에 등록하므로 `lb://`로 찾고(게이트웨이에 `EUREKA_URI`가 주입돼 있다), `org-service`·`search-service`는 `docker` 프로필에서 등록을 끄므로 `ORG_SERVICE_URI`/`SEARCH_SERVICE_URI`로 DNS 직결한다. `wiki-backend`도 `WIKI_SERVICE_URI`로 직결한다. 이 세 env가 빠지면 `lb://` 기본값이 해석될 방법이 없어 해당 경로가 통째로 503이 된다.
 
 **요청 처리 순서:** Security(CORS 프리플라이트 응답·JWT 검증·401 조기차단) → `RequestLoggingFilter`(`HIGHEST_PRECEDENCE` GlobalFilter — 401로 잘린 요청은 여기 안 옴) → 라우트 매칭(rate limit·CB 필터) → 다운스트림 프록시.
 
@@ -53,7 +59,7 @@ Spring Cloud Gateway **WebFlux** · Spring Boot **4.0.6** · Java **24** · Spri
 
 ## 빠른 시작
 
-**전제:** eureka-server(:8761) · auth-server(:9000) · board-service(:9100) · infra(Keycloak+Postgres) 가 먼저 떠 있어야 한다. (게이트웨이 자체는 아무것도 없이도 뜨지만, 프록시 요청은 인스턴스 미발견으로 503이 난다. 기동 순서는 강제 아님 — 서비스가 유레카에 등록되는 대로 라우팅이 살아난다.)
+**전제:** eureka-server(:8761) · auth-server(:9000) 등 라우팅 대상이 떠 있어야 실제 프록시가 성립한다. (게이트웨이 자체는 아무것도 없이도 뜨지만, 프록시 요청은 인스턴스 미발견으로 503이 난다. 기동 순서는 강제 아님 — 서비스가 유레카에 등록되는 대로 라우팅이 살아난다.)
 
 ### gradlew (터미널)
 
@@ -65,11 +71,12 @@ $env:JAVA_HOME = 'C:\Program Files\Java\jdk-24'
 
 ### IntelliJ (.run 공유 Config)
 
-repo에 커밋된 `.run/bootRun.run.xml`(Gradle `bootRun` 태스크)이 IntelliJ 실행 버튼에 자동으로 나타난다. IDE에서 재시작·디버깅한다. 백엔드 4서비스 공통 개발 방식(프론트는 VSCode + `scripts/dev-up.ps1`, 우산 repo README 참고).
+repo에 커밋된 `.run/` 공유 Run Config가 IntelliJ 실행 버튼에 자동으로 나타난다(`bootRun`, dev 오프셋용 `bootRun (dev)`). 백엔드 공통 개발 방식이며 프론트는 VSCode + `scripts/dev-up-local.ps1`을 쓴다(우산 repo README 참고).
 
 기동 확인: `http://localhost:8000/.well-known/jwks.json` → auth-server JWKS 그대로 반환.
 
-> 포트 맵: gateway 8000 / eureka 8761 / auth 9000 / board 9100 / Keycloak 8080 / Postgres 5433 / Redis 6379 / myFront 5173.
+> 포트 맵: gateway 8000 / eureka 8761 / auth 9000 / board 9100 / wiki 9110(gRPC 9111) / org 9130(gRPC 9131) / search 9140 / Keycloak 8080 / Postgres 5433 / Redis 6379 / myFront 5173.
+> dev 오프셋 클러스터는 운영 포트 **+10000**(게이트웨이 dev = `:18000`).
 
 ### Docker (컨테이너)
 
@@ -80,25 +87,43 @@ repo에 커밋된 `.run/bootRun.run.xml`(Gradle `bootRun` 태스크)이 IntelliJ
 docker build -t gateway-server .          # eclipse-temurin:24-jre 베이스, EXPOSE 8000
 ```
 
-Compose 네트워크에서는 서비스명이 곧 DNS 호스트명이므로 `EUREKA_URI`/`AUTH_SERVER_URI` 등을 서비스명 기준으로 주입한다(아래 환경 변수 표).
+Compose는 `EUREKA_URI`와 `ORG_SERVICE_URI`/`WIKI_SERVICE_URI`/`SEARCH_SERVICE_URI`를 서비스명 기준으로 주입한다. auth·board 라우트에는 직접 URI를 주입하지 않고 컨테이너에서도 `lb://` + Eureka를 사용한다(아래 환경 변수 표).
 
 ---
 
 ## 라우팅 규칙
 
-`application.yml`에 선언. **No StripPrefix — 클라이언트가 보낸 경로 = 서비스가 받는 경로.**
-대상은 유레카 서비스 이름 기준 `lb://` (env로 직접 URI 오버라이드 가능).
+`application.yml`에 선언. **기본은 No StripPrefix — 클라이언트가 보낸 경로 = 서비스가 받는 경로.** (`search`만 예외, 아래)
+대상 기본값은 전부 `lb://<서비스명>`이다. 컨테이너에서는 auth·board가 그대로 유레카로 해석되고, org·wiki·search만 `*_SERVICE_URI` env로 DNS 직결된다(아래 표의 굵은 표시).
 
-| 라우트 id | 경로 패턴 | → 대상 | 필터 / 비고 |
+| 라우트 id | 경로 패턴 | → 대상 (기본값 / docker env) | 필터 / 비고 |
 |---|---|---|---|
-| `board` | `/api/board/**` | `lb://board-service` | CircuitBreaker(→`/fallback/board`) + GET 한정 Retry 2회 |
-| `auth-oauth2` | `/oauth2/**` | `lb://auth-server` | OIDC 로그인 시작·콜백. RateLimiter 10/20 |
-| `auth-login` | `/login/**` | `lb://auth-server` | OIDC 리다이렉트 흐름. RateLimiter 10/20 |
-| `auth-api` | `/api/auth/**` | `lb://auth-server` | refresh · logout. RateLimiter 5/10 |
-| `auth-jwks` | `/.well-known/**` | `lb://auth-server` | JWKS 공개키. 필터 없음 |
-| `auth-me` | `/api/me` | `lb://auth-server` | 자체 JWT 기반 사용자 정보. RateLimiter 없음(의도 — Security가 무토큰/위조를 이미 401 차단, 브루트포스 표면 아님) |
+| `board` | `/api/board/**` | `lb://board-service` (docker도 유레카) | CircuitBreaker(→`/fallback/board`) + GET 한정 Retry 2회 |
+| `auth-oauth2` | `/oauth2/**` | `lb://auth-server` / `AUTH_SERVER_URI` | OIDC 로그인 시작·콜백. RateLimiter 10/20 |
+| `auth-login` | `/login/**` | `lb://auth-server` / `AUTH_SERVER_URI` | OIDC 리다이렉트 흐름. RateLimiter 10/20 |
+| `auth-api` | `/api/auth/**` | `lb://auth-server` / `AUTH_SERVER_URI` | refresh · logout. RateLimiter 5/10 |
+| `auth-jwks` | `/.well-known/**` | `lb://auth-server` / `AUTH_SERVER_URI` | JWKS 공개키. 필터 없음 |
+| `auth-me` | `/api/me` | `lb://auth-server` / `AUTH_SERVER_URI` | 자체 JWT 기반 사용자 정보. RateLimiter 없음(의도 — Security가 무토큰/위조를 이미 401 차단, 브루트포스 표면 아님) |
+| `org` | `/api/org/**` | `lb://org-service` / **docker: `ORG_SERVICE_URI`** | 조직·팀·RBAC. 경로 불변 |
+| `wiki` | `/api/wiki/**` | `lb://wiki-backend` / **docker: `WIKI_SERVICE_URI`** | 스페이스·페이지·첨부. 경로 불변 |
+| `search` | `/api/search/**` | `lb://search-service` / **docker: `SEARCH_SERVICE_URI`** | **`StripPrefix=2`** + RateLimiter 5/15 |
 
-라우트 id·lb:// 기본값은 `RouteConfigTest`가 검증하므로, 바꾸면 테스트도 함께 갱신한다.
+### `search` 라우트의 StripPrefix=2 (No StripPrefix 원칙의 유일한 예외)
+
+org/wiki는 컨트롤러가 `/api/org`·`/api/wiki` 접두사를 그대로 갖고 있어 경로를 손대지 않는다.
+search-service는 갖지 않는다 — GraphQL이 단일 URL이라 접두사를 붙일 자리가 없고, 관리 REST도 그에 맞춰 통일했다. 그래서 이 라우트만 앞 두 세그먼트(`api`, `search`)를 뗀다.
+
+| 외부 경로(클라이언트) | 내부 경로(search-service가 받는 것) |
+|---|---|
+| `POST /api/search/graphql` | `POST /graphql` |
+| `POST /api/search/admin/reindex` | `POST /admin/reindex` |
+| `GET /api/search/admin/reindex/{jobId}` | `GET /admin/reindex/{jobId}` |
+
+`parts` 값이 틀리면 다운스트림이 조용히 404를 낸다. 값을 바꾸면 `RouteConfigTest`의 `StripPrefix parts = 2` 단언이 깨진다.
+
+**rate limit을 거는 이유**: 검색은 한 요청이 색인 전체를 훑을 수 있어 비용이 크다. Security가 무인증을 이미 401로 끊지만, 유효 토큰 소지자가 반복해 때리는 것까지는 막지 못한다. `auth-api`(5/10)보다 burst만 넉넉한 **5/15** — 사람이 타이핑하며 재검색하는 패턴은 통과시키되 스크립트 연타는 자른다. Redis 부재 시 fail-open은 다른 라우트와 동일하다.
+
+라우트 id·`lb://` 기본값·필터 구성은 `RouteConfigTest`가 검증하므로, 바꾸면 테스트도 함께 갱신한다.
 `lb://` 뒤의 이름은 대상 서비스의 `spring.application.name`과 일치해야 한다(유레카 등록 ID).
 
 ---
@@ -125,16 +150,25 @@ Compose 네트워크에서는 서비스명이 곧 DNS 호스트명이므로 `EUR
 
 | 변수 | 기본값 (로컬 실행) | Docker Compose 예시 |
 |---|---|---|
-| `EUREKA_URI` | `http://localhost:8761/eureka` | `http://eureka-server:8761/eureka` |
-| `AUTH_SERVER_URI` | `lb://auth-server` (유레카 해석) | 직접 URI로 유레카 우회 가능 |
-| `BOARD_SERVICE_URI` | `lb://board-service` (유레카 해석) | 직접 URI로 유레카 우회 가능 |
+| `EUREKA_URI` | `http://localhost:8761/eureka` | `http://eureka:8761/eureka` |
+| `AUTH_SERVER_URI` | `lb://auth-server` (유레카 해석) | **compose는 주입하지 않는다** — 컨테이너에서도 유레카로 찾는다 |
+| `BOARD_SERVICE_URI` | `lb://board-service` (유레카 해석) | **compose는 주입하지 않는다** — 컨테이너에서도 유레카로 찾는다 |
+| `ORG_SERVICE_URI` | `lb://org-service` (유레카 해석) | `http://org-service:9130` (**docker 필수** — 유레카 미등록) |
+| `WIKI_SERVICE_URI` | `lb://wiki-backend` (유레카 해석) | `http://wiki-backend:9110` (compose가 주입) |
+| `SEARCH_SERVICE_URI` | `lb://search-service` (유레카 해석) | `http://search-service:9140` (**docker 필수** — 유레카 미등록) |
 | `CORS_ALLOWED_ORIGIN` | `http://localhost:5173` | `http://localhost:5173` |
 | `AUTH_JWKS_URI` | `http://localhost:9000/.well-known/jwks.json` | `http://auth-server:9000/...` |
 | `PLATFORM_ISSUER` | `http://localhost:9000` | auth-server 발급 iss와 일치 |
 | `PLATFORM_AUDIENCE` | `platform-api` | auth-server 발급 aud와 일치 |
 | `REDIS_HOST` / `REDIS_PORT` | `localhost` / `6379` | `redis` / `6379` (없으면 rate limit fail-open) |
 
-**Docker DNS 설명:** Docker Compose 네트워크 안에서는 `docker-compose.yml`의 **서비스명이 곧 DNS 호스트명**이 된다. 컨테이너끼리 `auth-server`, `board-service`, `gateway-server` 등으로 직접 찾을 수 있어서, 환경변수에 `http://auth-server:9000` 처럼 서비스명을 사용한다. 로컬 직접 실행 시에는 기본값인 `localhost`가 적용된다. (`CORS_ALLOWED_ORIGIN`은 **브라우저 주소창 기준** 오리진이므로 컨테이너 안에서도 `localhost:5173` 그대로다.)
+**Docker DNS 설명:** Docker Compose 네트워크 안에서는 `docker-compose.yml`의 **서비스명이 곧 DNS 호스트명**이 된다. 컨테이너끼리 `auth-server`, `wiki-backend`, `search-service` 등으로 직접 찾을 수 있어서, 환경변수에 `http://search-service:9140` 처럼 서비스명을 사용한다. 로컬 직접 실행 시에는 기본값인 `localhost`가 적용된다. (`CORS_ALLOWED_ORIGIN`은 **브라우저 주소창 기준** 오리진이므로 컨테이너 안에서도 `localhost:5173` 그대로다.)
+
+`org-service`와 `search-service`는 `docker` 프로필에서 **유레카에 등록하지 않는다**(확정 설계). 따라서 이 둘의 `*_SERVICE_URI`는 컨테이너 배포에서 선택이 아니라 **필수**다 — 빠지면 `lb://` 기본값을 해석할 방법이 없어 해당 라우트 전체가 503이 된다. `WIKI_SERVICE_URI`도 compose가 함께 주입한다.
+
+반대로 `auth-server`·`board-service`는 컨테이너에서도 유레카에 등록되므로 `AUTH_SERVER_URI`/`BOARD_SERVICE_URI`를 주입하지 않는다 — compose의 게이트웨이 env를 보면 이 둘은 없고 `EUREKA_URI`만 있다. **즉 컨테이너 스택에서 eureka는 여전히 필수 구성요소다.**
+
+**게이트웨이는 제품 서비스를 `depends_on`에 두지 않는다** — 게이트웨이가 org·wiki·search의 기동을 기다리면 단일 진입점이 그 서비스와 함께 죽는다. 다운스트림 부재는 라우트 단위 5xx로 격리되는 것이 설계다.
 
 > `trusted-proxies`는 env가 아니라 `application.yml`에 정규식으로 하드코딩돼 있다(dev 전용). nginx/프록시 토폴로지가 바뀌면 yml을 직접 고친다 — 아래 섹션 참고.
 
@@ -194,19 +228,19 @@ $env:JAVA_HOME = 'C:\Program Files\Java\jdk-24'
 .\gradlew.bat test     # JUnit 전체 — 다운스트림 서비스·Redis 없이 실행 가능
 ```
 
-| 테스트 | 검증 내용 |
-|---|---|
-| `RouteConfigTest` | 6개 라우트 id 등록 + 기본 uri가 lb://(서비스 디스커버리) + 인증 라우트에 RequestRateLimiter 필터 존재 |
-| `CorsTest` | `:5173` 오리진의 프리플라이트(OPTIONS)가 200 + `Access-Control-Allow-Origin` 응답 |
-| `SecurityConfigTest` | 보호 경로 무토큰/위조 토큰 401(+401에도 CORS 헤더), 공개 경로는 보안 통과 |
-| `AudienceValidatorTest` | aud 클레임 일치/불일치 검증 |
-| `BoardFallbackTest` | board 다운 시 fallback 503 JSON |
-| `SlowBoardDownstreamTest` | 느린 다운스트림에서 타임아웃/CB 동작 |
-| `HttpClientTimeoutTest` | 전역 connect/response 타임아웃 바인딩 |
-| `IpKeyResolverTest` | rate limit 키 = 클라이언트 IP (없으면 "unknown") |
-| `RequestLoggingFilterTest` | `X-Request-Id` 생성/보존/형식 검증 후 재발급 + 헤더 1개 유지 |
+전체 **27개** 테스트. 실제 다운스트림으로 프록시하지 않으므로 auth/board/org/wiki/search·Redis 없이 돈다.
 
-테스트는 실제 다운스트림으로 프록시하지 않는다 — 라우트 정의·CORS·필터만 검증하므로 auth-server/board-service 기동 불필요.
+| 테스트 | 개수 | 검증 내용 |
+|---|---|---|
+| `RouteConfigTest` | 6 | 라우트 id 9개 등록 + 기본 uri가 `lb://`(제품 3서비스 포함) + 인증 라우트의 RequestRateLimiter + **`search`만 `StripPrefix parts = 2`이고 org/wiki에는 없음** + search 라우트의 rate limiter |
+| `CorsTest` | 1 | `:5173` 오리진의 프리플라이트(OPTIONS)가 200 + `Access-Control-Allow-Origin` 응답 |
+| `SecurityConfigTest` | 5 | 보호 경로 무토큰/위조 토큰 401(+401에도 CORS 헤더), 공개 경로는 보안 통과, **`/api/search/graphql`·`/api/search/admin/reindex[/{id}]` 무토큰 401** |
+| `AudienceValidatorTest` | 3 | aud 클레임 일치/불일치 검증 |
+| `BoardFallbackTest` | 2 | board 다운 시 fallback 503 JSON |
+| `SlowBoardDownstreamTest` | 1 | 느린 다운스트림에서 타임아웃/CB 동작 |
+| `HttpClientTimeoutTest` | 1 | 전역 connect/response 타임아웃 바인딩 |
+| `IpKeyResolverTest` | 4 | rate limit 키 = nginx 뒤 XFF 실 클라이언트 IP (없으면 "unknown") |
+| `RequestLoggingFilterTest` | 4 | `X-Request-Id` 생성/보존/형식 검증 후 재발급 + 헤더 1개 유지 |
 
 빌드 산출물: `bootJar` → `build/libs/app.jar` (archiveFileName 고정, Dockerfile이 이 이름으로 복사).
 
@@ -218,9 +252,8 @@ $env:JAVA_HOME = 'C:\Program Files\Java\jdk-24'
 |---|---|
 | **분산 추적 백엔드** | Micrometer Tracing + Zipkin/Tempo exporter (수동 X-Request-Id 대체) |
 | **요청 크기 제한 / 보안 응답 헤더** | `RequestSize` 필터, SecureHeaders |
-| **프록시 뒤 rate limit 키** | `XForwardedRemoteAddressResolver` 기반 KeyResolver (게이트웨이가 프록시 뒤로 갈 때) |
 
-> Rate Limiting·서킷브레이커·JWT 조기차단은 2026-07-03, 서비스 디스커버리(Eureka lb://)는 2026-07-05 구현 완료(위 역할 섹션 참고).
+> Rate Limiting·서킷브레이커·JWT 조기차단, 서비스 디스커버리(Eureka `lb://`), nginx 뒤 XFF 실 IP rate-limit 키는 모두 구현 완료다(위 역할 섹션 참고).
 
 ---
 
@@ -235,8 +268,11 @@ src/main/java/com/platform/gateway/
 ├─ security/AudienceValidator.java  aud 클레임 검증 (board-service와 동일 패턴)
 ├─ web/FallbackController.java      /fallback/board → 503
 └─ filter/RequestLoggingFilter.java GlobalFilter: X-Request-Id 검증/재발급 + 요청 1줄 로깅
-src/main/resources/application.yml  라우트(+rate limit·CB 필터) + trusted-proxies + 타임아웃 + platform.* 계약
-.run/bootRun.run.xml                IntelliJ 공유 Run Config (Gradle bootRun)
+src/main/resources/
+├─ application.yml                  라우트 9개(+rate limit·CB·StripPrefix 필터) + trusted-proxies + 타임아웃 + platform.* 계약
+├─ application-dev.yml              dev 오프셋(:18000, Redis db1, dev eureka/JWKS)
+└─ application-docker.yml           컨테이너 프로필 — 콘솔 로그를 ECS JSON으로(Alloy→Loki 수집)
+.run/                               IntelliJ 공유 Run Config (bootRun / bootRun (dev))
 Dockerfile                          런타임 전용 (temurin:24-jre, build/libs/app.jar 복사)
 ```
 
@@ -247,7 +283,7 @@ Dockerfile                          런타임 전용 (temurin:24-jre, build/libs
 - **`Gradle requires JVM 17 or later`** → `JAVA_HOME`을 JDK 24로. (기본이 11)
 - **라우트가 전혀 안 먹고 전부 404** → 설정 prefix 확인. Boot 4 / Spring Cloud 2025.x는 `spring.cloud.gateway.server.webflux.routes` 다(구버전 `spring.cloud.gateway.routes` 아님).
 - **nginx 통합배포에서 로그인 시 Keycloak이 `redirect_uri` 거부** → 게이트웨이 `trusted-proxies`에 프록시/도커 대역이 포함됐는지 확인(위 X-Forwarded 섹션). Keycloak realm의 Valid Redirect URIs가 stale하지 않은지도 함께 점검(2중 원인).
-- **프록시 응답이 `503 Service Unavailable`** → 해당 다운스트림이 유레카에 등록 안 됨(미기동 또는 등록 전파 대기 최대 30s). `http://localhost:8761` 대시보드에서 등록 상태 확인.
+- **프록시 응답이 `503 Service Unavailable`** → auth·board는 미기동 또는 Eureka 등록 전파 대기(최대 30s)일 수 있으므로 `http://localhost:8761` 대시보드를 확인한다. org·wiki·search는 DNS 직결이므로 게이트웨이의 `ORG_SERVICE_URI`/`WIKI_SERVICE_URI`/`SEARCH_SERVICE_URI`와 대상 컨테이너의 running·healthy 상태를 확인한다.
 - **프록시 응답이 `500 UnknownHostException ... mshome.net`** → 다운스트림이 유레카에 DNS 해석 불가 호스트명으로 등록된 것. 각 서비스 `eureka.instance.prefer-ip-address: true` 확인 (Windows/Hyper-V에서 필수 — E2E 실측).
 - **다운스트림이 `Port 910x was already in use`로 기동 실패 (리스너 없음)** → Docker/Hyper-V가 부팅 시 예약한 포트 제외 범위에 걸린 것. `netsh interface ipv4 show excludedportrange protocol=tcp`로 확인 후 범위 밖 포트로 기동(`$env:SERVER_PORT`). 유레카 덕에 포트를 바꿔도 게이트웨이 설정은 불변.
 - **브라우저 콘솔에 CORS 에러** → 프론트 오리진이 `CORS_ALLOWED_ORIGIN`과 정확히 일치하는지(스킴·호스트·포트) 확인. 쿠키가 필요한 요청은 프론트에서 `credentials: 'include'`도 필요.
