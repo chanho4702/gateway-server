@@ -39,6 +39,19 @@ class SecurityConfigTest {
                 .exchange().expectStatus().isUnauthorized();
     }
 
+    /**
+     * 검색 경로(Wave C)는 전량 인증 필수. GraphQL은 단일 URL이라 "이 필드만 공개" 같은
+     * 경로 기반 예외를 둘 수 없고, 재색인은 관리자 조작이라 더 강하다.
+     * anyExchange().authenticated()에 기대는 계약이라, 누가 permitAll을 넓히면 여기서 깨진다.
+     */
+    @Test
+    void searchPathsWithoutTokenAre401() {
+        client().post().uri("/api/search/graphql").exchange().expectStatus().isUnauthorized();
+        client().post().uri("/api/search/admin/reindex").exchange().expectStatus().isUnauthorized();
+        client().get().uri("/api/search/admin/reindex/some-job-id").exchange()
+                .expectStatus().isUnauthorized();
+    }
+
     @Test
     void unauthorizedResponseCarriesCorsHeaders() {
         // 401이라도 CORS 헤더가 있어야 브라우저 fetch가 상태를 읽고 refresh 흐름을 탄다.

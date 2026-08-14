@@ -96,6 +96,30 @@ spring:
               uri: ${WIKI_SERVICE_URI:lb://wiki-backend}
               predicates:
                 - Path=/api/wiki/**
+            # search-service — 통합 검색 GraphQL + 재색인 관리 REST (Wave C).
+            # dev/기본: lb://(Eureka) · docker: SEARCH_SERVICE_URI DNS 직결 — org/wiki와 동일 분기.
+            #
+            # org/wiki와 달리 StripPrefix=2를 건다. 두 서비스는 컨트롤러가 /api/org·/api/wiki를
+            # 그대로 갖고 있지만 search-service는 안 갖는다 — GraphQL이 단일 URL(/graphql)이라
+            # 접두사를 붙일 자리가 없고, 관리 REST도 그에 맞춰 /admin/reindex로 통일했다.
+            # 결과 매핑:  /api/search/graphql        → /graphql
+            #             /api/search/admin/reindex  → /admin/reindex
+            #
+            # rate limiter: 검색은 한 요청이 색인 전체를 훑을 수 있어 비용이 크다 — 인증된
+            # 사용자만 도달하지만(Security), 한 사람이 반복해 때리는 것까지 막지는 못한다.
+            # auth-api(5/10)보다 burst만 넉넉한 5/15 — 사람이 타이핑하며 재검색하는 패턴을 막지 않되
+            # 스크립트 연타는 잘린다. Redis 부재 시 fail-open(요청 통과)은 다른 라우트와 동일.
+            - id: search
+              uri: ${SEARCH_SERVICE_URI:lb://search-service}
+              predicates:
+                - Path=/api/search/**
+              filters:
+                - StripPrefix=2
+                - name: RequestRateLimiter
+                  args:
+                    redis-rate-limiter.replenishRate: 5
+                    redis-rate-limiter.burstCapacity: 15
+                    key-resolver: "#{@ipKeyResolver}"
 
 eureka:
   client:
