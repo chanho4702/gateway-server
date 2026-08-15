@@ -96,6 +96,11 @@ spring:
               uri: ${WIKI_SERVICE_URI:lb://wiki-backend}
               predicates:
                 - Path=/api/wiki/**
+            # alm-backend — 프로젝트·이슈 REST (Wave D). 컨트롤러가 /api/alm 접두사를 소유한다.
+            - id: alm
+              uri: ${ALM_SERVICE_URI:lb://alm-backend}
+              predicates:
+                - Path=/api/alm/**
             # search-service — 통합 검색 GraphQL + 재색인 관리 REST (Wave C).
             # dev/기본: lb://(Eureka) · docker: SEARCH_SERVICE_URI DNS 직결 — org/wiki와 동일 분기.
             #
