@@ -23,7 +23,7 @@ class RouteConfigTest {
                 .block();
         assertThat(ids).contains(
                 "board", "auth-oauth2", "auth-login", "auth-api", "auth-jwks", "auth-me",
-                "org", "wiki-collaboration", "wiki", "alm", "search");
+                "org", "wiki-collaboration-bootstrap", "wiki-collaboration", "wiki", "alm", "search");
     }
 
     @Test
@@ -73,6 +73,9 @@ class RouteConfigTest {
     @Test
     void collaborationWebSocketRoutePrecedesWikiRestCatchAll() {
         var routes = routeLocator.getRoutes().collectList().block();
+        var bootstrap = routes.stream()
+                .filter(r -> r.getId().equals("wiki-collaboration-bootstrap"))
+                .findFirst().orElseThrow();
         var collaboration = routes.stream()
                 .filter(r -> r.getId().equals("wiki-collaboration")).findFirst().orElseThrow();
         var wiki = routes.stream().filter(r -> r.getId().equals("wiki")).findFirst().orElseThrow();
@@ -82,6 +85,13 @@ class RouteConfigTest {
                 .hasHost("localhost")
                 .hasPort(19150);
         assertThat(collaboration.getOrder()).isLessThan(wiki.getOrder());
+        assertThat(bootstrap.getUri())
+                .hasScheme("http")
+                .hasHost("localhost")
+                .hasPort(19150);
+        assertThat(bootstrap.getOrder()).isLessThan(collaboration.getOrder());
+        assertThat(bootstrap.getPredicate().toString())
+                .contains("/api/wiki/collaboration/pages/*/bootstrap");
     }
 
     /**

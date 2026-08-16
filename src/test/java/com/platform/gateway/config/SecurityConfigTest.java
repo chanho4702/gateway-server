@@ -56,6 +56,8 @@ class SecurityConfigTest {
     void collaborationUpgradePathUsesTicketAuthButWikiRestStillRequiresJwt() {
         client().get().uri("/api/wiki/collaboration").exchange()
                 .expectStatus().value(status -> assertThat(status).isNotEqualTo(401));
+        client().post().uri("/api/wiki/collaboration/pages/7/bootstrap").exchange()
+                .expectStatus().value(status -> assertThat(status).isNotEqualTo(401));
         client().post().uri("/api/wiki/pages/7/collaboration-ticket").exchange()
                 .expectStatus().isUnauthorized();
         client().get().uri("/api/wiki/pages/7").exchange()
