@@ -23,7 +23,8 @@
                            라우팅 / CORS / 로깅     ├─▶ org-service(:9130)     /api/org/**
                            rate limit / CB          ├─▶ wiki-backend(:9110)    /api/wiki/**
                            JWT 1차검증(Security)     ├─▶ alm-backend(:9120)     /api/alm/**
-                                                   └─▶ search-service(:9140)  /api/search/**
+                                                   ├─▶ search-service(:9140)  /api/search/**
+                                                   └─▶ collaboration(:9150)   /api/wiki/collaboration
                            X-Forwarded 신뢰(trusted-proxies)
                            lb:// 디스커버리 ── eureka-server(:8761)  auth·board
                            *_SERVICE_URI 로 DNS 직결 ── org·wiki·alm·search
@@ -112,6 +113,7 @@ Compose는 `EUREKA_URI`와 `ORG_SERVICE_URI`/`WIKI_SERVICE_URI`/`ALM_SERVICE_URI
 | `auth-jwks` | `/.well-known/**` | `lb://auth-server` / `AUTH_SERVER_URI` | JWKS 공개키. 필터 없음 |
 | `auth-me` | `/api/me` | `lb://auth-server` / `AUTH_SERVER_URI` | 자체 JWT 기반 사용자 정보. RateLimiter 없음(의도 — Security가 무토큰/위조를 이미 401 차단, 브루트포스 표면 아님) |
 | `org` | `/api/org/**` | `lb://org-service` / **docker: `ORG_SERVICE_URI`** | 조직·팀·RBAC. 경로 불변 |
+| `wiki-collaboration` | `/api/wiki/collaboration[/**]` | `ws://localhost:19150` / **docker: `COLLABORATION_SERVICE_URI`** | 1회 ticket 인증 Hocuspocus WebSocket. wiki보다 우선 |
 | `wiki` | `/api/wiki/**` | `lb://wiki-backend` / **docker: `WIKI_SERVICE_URI`** | 스페이스·페이지·첨부. 경로 불변 |
 | `alm` | `/api/alm/**` | `lb://alm-backend` / **docker: `ALM_SERVICE_URI`** | 프로젝트·이슈. 경로 불변 |
 | `search` | `/api/search/**` | `lb://search-service` / **docker: `SEARCH_SERVICE_URI`** | **`StripPrefix=2`** + RateLimiter 5/15 |
@@ -163,6 +165,7 @@ search-service는 갖지 않는다 — GraphQL이 단일 URL이라 접두사를 
 | `BOARD_SERVICE_URI` | `lb://board-service` (유레카 해석) | **compose는 주입하지 않는다** — 컨테이너에서도 유레카로 찾는다 |
 | `ORG_SERVICE_URI` | `lb://org-service` (유레카 해석) | `http://org-service:9130` (**docker 필수** — 유레카 미등록) |
 | `WIKI_SERVICE_URI` | `lb://wiki-backend` (유레카 해석) | `http://wiki-backend:9110` (compose가 주입) |
+| `COLLABORATION_SERVICE_URI` | `ws://localhost:19150` | `ws://collaboration-service:9150` |
 | `ALM_SERVICE_URI` | `lb://alm-backend` (유레카 해석) | `http://alm-backend:9120` (**docker 필수** — 유레카 미등록) |
 | `SEARCH_SERVICE_URI` | `lb://search-service` (유레카 해석) | `http://search-service:9140` (**docker 필수** — 유레카 미등록) |
 | `CORS_ALLOWED_ORIGIN` | `http://localhost:5173` | `http://localhost:5173` |

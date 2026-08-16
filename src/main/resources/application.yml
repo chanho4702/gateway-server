@@ -91,6 +91,14 @@ spring:
               uri: ${ORG_SERVICE_URI:lb://org-service}
               predicates:
                 - Path=/api/org/**
+            # collaboration-service — Hocuspocus WebSocket. Access Token 대신 wiki-backend가 발급한
+            # 1회 ticket을 Hocuspocus 인증 메시지로 검증하므로 Gateway JWT 필터는 이 경로만 예외다.
+            # 일반 wiki catch-all보다 먼저/낮은 order로 고정하지 않으면 lb://wiki-backend로 잘못 간다.
+            - id: wiki-collaboration
+              uri: ${COLLABORATION_SERVICE_URI:ws://localhost:19150}
+              order: -1
+              predicates:
+                - Path=/api/wiki/collaboration,/api/wiki/collaboration/**
             # wiki-backend — 위키 REST (Wave B). dev: lb:// · docker: WIKI_SERVICE_URI DNS 직결
             - id: wiki
               uri: ${WIKI_SERVICE_URI:lb://wiki-backend}

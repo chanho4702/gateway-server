@@ -23,7 +23,7 @@ class RouteConfigTest {
                 .block();
         assertThat(ids).contains(
                 "board", "auth-oauth2", "auth-login", "auth-api", "auth-jwks", "auth-me",
-                "org", "wiki", "alm", "search");
+                "org", "wiki-collaboration", "wiki", "alm", "search");
     }
 
     @Test
@@ -68,6 +68,20 @@ class RouteConfigTest {
             var route = routes.stream().filter(r -> r.getId().equals(e.id())).findFirst().orElseThrow();
             assertThat(route.getUri()).as("route %s", e.id()).hasScheme("lb").hasHost(e.host());
         }
+    }
+
+    @Test
+    void collaborationWebSocketRoutePrecedesWikiRestCatchAll() {
+        var routes = routeLocator.getRoutes().collectList().block();
+        var collaboration = routes.stream()
+                .filter(r -> r.getId().equals("wiki-collaboration")).findFirst().orElseThrow();
+        var wiki = routes.stream().filter(r -> r.getId().equals("wiki")).findFirst().orElseThrow();
+
+        assertThat(collaboration.getUri())
+                .hasScheme("ws")
+                .hasHost("localhost")
+                .hasPort(19150);
+        assertThat(collaboration.getOrder()).isLessThan(wiki.getOrder());
     }
 
     /**

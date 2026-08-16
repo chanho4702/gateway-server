@@ -53,6 +53,16 @@ class SecurityConfigTest {
     }
 
     @Test
+    void collaborationUpgradePathUsesTicketAuthButWikiRestStillRequiresJwt() {
+        client().get().uri("/api/wiki/collaboration").exchange()
+                .expectStatus().value(status -> assertThat(status).isNotEqualTo(401));
+        client().post().uri("/api/wiki/pages/7/collaboration-ticket").exchange()
+                .expectStatus().isUnauthorized();
+        client().get().uri("/api/wiki/pages/7").exchange()
+                .expectStatus().isUnauthorized();
+    }
+
+    @Test
     void unauthorizedResponseCarriesCorsHeaders() {
         // 401이라도 CORS 헤더가 있어야 브라우저 fetch가 상태를 읽고 refresh 흐름을 탄다.
         client().post().uri("/api/board/posts")
