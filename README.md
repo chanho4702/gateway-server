@@ -1,5 +1,11 @@
 # gateway-server
 
+[![CI](https://github.com/chanho4702/gateway-server/actions/workflows/ci.yml/badge.svg)](https://github.com/chanho4702/gateway-server/actions/workflows/ci.yml)
+![Java](https://img.shields.io/badge/Java-24-ED8B00?logo=openjdk&logoColor=white)
+![Spring Boot](https://img.shields.io/badge/Spring%20Boot-4.0.6-6DB33F?logo=springboot&logoColor=white)
+![Spring Cloud](https://img.shields.io/badge/Spring%20Cloud-2025.1.2-6DB33F)
+![Gateway](https://img.shields.io/badge/Spring%20Cloud-Gateway-6DB33F)
+
 모든 클라이언트 트래픽의 **단일 진입점(Single Entry Point)**.
 라우팅 + CORS 중앙화 + 요청 로깅(traceId) + **rate limiting + 타임아웃/서킷브레이커 + JWT 조기차단 + X-Forwarded 프록시 처리**를 담당한다.
 
