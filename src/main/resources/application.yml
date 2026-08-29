@@ -117,6 +117,12 @@ spring:
               predicates:
                 - Path=/api/alm/**
             # search-service — 통합 검색 GraphQL + 재색인 관리 REST (Wave C).
+            #
+            # OpenSearch를 띄우지 않는 배포는 SEARCH_SERVICE_URI를 wiki-backend로 돌린다
+            # (예: http://wiki-backend:9110). wiki-backend가 같은 GraphQL 계약을 Postgres로
+            # 구현하고 있어 프론트는 그대로다 — 스위치는 이 환경변수 **하나뿐**이고, 두 곳에
+            # 두면 반쪽만 바뀐 배포가 생긴다. 라이트 모드에서는 /admin/reindex가 없다(색인이
+            # 없으니 재색인할 것도 없다 — 404가 정확한 응답이다).
             # dev/기본: lb://(Eureka) · docker: SEARCH_SERVICE_URI DNS 직결 — org/wiki와 동일 분기.
             #
             # org/wiki와 달리 StripPrefix=2를 건다. 두 서비스는 컨트롤러가 /api/org·/api/wiki를
