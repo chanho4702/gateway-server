@@ -40,6 +40,9 @@ public class SecurityConfig {
                         .pathMatchers(HttpMethod.OPTIONS).permitAll() // preflight
                         .pathMatchers("/oauth2/**", "/login/**", "/api/auth/**",
                                 "/.well-known/**", "/fallback/**").permitAll()
+                        // WebSocket은 브라우저가 Authorization header를 안정적으로 넣을 수 없다.
+                        // 이 정확한 경로만 열고 collaboration-service의 Redis GETDEL ticket이 최종 인증한다.
+                        .pathMatchers("/api/wiki/collaboration", "/api/wiki/collaboration/**").permitAll()
                         //인증 관련 경로 + /fallback/** 허용 — fallback을 안 열어두면 서킷브레이커가 forward한 내부 요청이 401로 죽는 미묘한 버그가 생김
                         .pathMatchers(HttpMethod.GET, "/api/board/posts/**").permitAll() // 비 로그인 게시글 열람
                         .anyExchange().authenticated())

@@ -23,7 +23,7 @@ class RouteConfigTest {
                 .block();
         assertThat(ids).contains(
                 "board", "auth-oauth2", "auth-login", "auth-api", "auth-jwks", "auth-me",
-                "org", "wiki", "search");
+                "org", "wiki-collaboration-bootstrap", "wiki-collaboration", "wiki", "alm", "search");
     }
 
     @Test
@@ -63,10 +63,35 @@ class RouteConfigTest {
         record Expect(String id, String host) {}
         for (Expect e : List.of(new Expect("org", "org-service"),
                 new Expect("wiki", "wiki-backend"),
+                new Expect("alm", "alm-backend"),
                 new Expect("search", "search-service"))) {
             var route = routes.stream().filter(r -> r.getId().equals(e.id())).findFirst().orElseThrow();
             assertThat(route.getUri()).as("route %s", e.id()).hasScheme("lb").hasHost(e.host());
         }
+    }
+
+    @Test
+    void collaborationWebSocketRoutePrecedesWikiRestCatchAll() {
+        var routes = routeLocator.getRoutes().collectList().block();
+        var bootstrap = routes.stream()
+                .filter(r -> r.getId().equals("wiki-collaboration-bootstrap"))
+                .findFirst().orElseThrow();
+        var collaboration = routes.stream()
+                .filter(r -> r.getId().equals("wiki-collaboration")).findFirst().orElseThrow();
+        var wiki = routes.stream().filter(r -> r.getId().equals("wiki")).findFirst().orElseThrow();
+
+        assertThat(collaboration.getUri())
+                .hasScheme("ws")
+                .hasHost("localhost")
+                .hasPort(19150);
+        assertThat(collaboration.getOrder()).isLessThan(wiki.getOrder());
+        assertThat(bootstrap.getUri())
+                .hasScheme("http")
+                .hasHost("localhost")
+                .hasPort(19150);
+        assertThat(bootstrap.getOrder()).isLessThan(collaboration.getOrder());
+        assertThat(bootstrap.getPredicate().toString())
+                .contains("/api/wiki/collaboration/pages/*/bootstrap");
     }
 
     /**
@@ -83,7 +108,7 @@ class RouteConfigTest {
                 .as("search 라우트의 StripPrefix parts=2")
                 .contains("StripPrefix parts = 2");
 
-        for (String id : List.of("org", "wiki")) {
+        for (String id : List.of("org", "wiki", "alm")) {
             var route = routes.stream().filter(r -> r.getId().equals(id)).findFirst().orElseThrow();
             assertThat(route.getFilters().toString())
                     .as("route %s는 접두사를 떼지 않는다", id)
