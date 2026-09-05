@@ -87,6 +87,10 @@ spring:
                 - Path=/api/me
             # org-service — 조직/팀/권한 관리 REST (Wave A).
             # dev: lb://(Eureka) · docker: ORG_SERVICE_URI로 DNS 직결 (Eureka 프로필 분기 1호)
+            #
+            # `/internal/org/**`는 의도적으로 라우팅하지 않는다 — 초대 확인·수락(auth-server → org)은
+            # 로그인 도중이라 사용자 JWT가 없고, X-Internal-Token 하나로만 인증한다. 게이트웨이에
+            # 노출하면 그 토큰이 곧 외부에서 쓸 수 있는 자격이 된다(클러스터 내부 전용, U1).
             - id: org
               uri: ${ORG_SERVICE_URI:lb://org-service}
               predicates:
