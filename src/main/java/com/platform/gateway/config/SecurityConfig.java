@@ -38,7 +38,8 @@ public class SecurityConfig {
                 .cors(cors -> cors.configurationSource(corsSource))
                 .authorizeExchange(auth -> auth
                         .pathMatchers(HttpMethod.OPTIONS).permitAll() // preflight
-                        .pathMatchers("/oauth2/**", "/login/**", "/api/auth/**",
+                        // /invite/**: 초대 링크 착지 — 아직 계정이 없는 사람이 여는 경로라 JWT가 있을 수 없다
+                        .pathMatchers("/oauth2/**", "/login/**", "/invite/**", "/api/auth/**",
                                 "/.well-known/**", "/fallback/**").permitAll()
                         // WebSocket은 브라우저가 Authorization header를 안정적으로 넣을 수 없다.
                         // 이 정확한 경로만 열고 collaboration-service의 Redis GETDEL ticket이 최종 인증한다.
