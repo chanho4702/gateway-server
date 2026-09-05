@@ -7,3 +7,8 @@ logging:
   structured:
     format:
       console: ecs
+
+platform:
+  # 컨테이너 네트워크에서는 서비스명이 DNS 호스트명. compose가 AUTH_SERVER_BASE_URI를 주입하지 않아도
+  # 이 기본값으로 동작한다. AGENT_INTERNAL_SECRET은 auth-server와 같은 값을 compose가 주입해야 한다.
+  auth-server-base-uri: ${AUTH_SERVER_BASE_URI:http://auth-server:9000}

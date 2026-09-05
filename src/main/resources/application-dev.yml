@@ -14,3 +14,5 @@ eureka:
       defaultZone: http://localhost:18761/eureka
 platform:
   jwks-uri: http://localhost:19000/.well-known/jwks.json
+  # dev 오프셋 auth-server(:19000). AGENT_INTERNAL_SECRET은 dev에서도 env로만 준다(기본 미설정 = PAT 거부).
+  auth-server-base-uri: ${AUTH_SERVER_BASE_URI:http://localhost:19000}

@@ -176,3 +176,7 @@ platform:
   issuer: ${PLATFORM_ISSUER:http://localhost:9000}
   audience: ${PLATFORM_AUDIENCE:platform-api}
   cors-allowed-origin: ${CORS_ALLOWED_ORIGIN:http://localhost:5173}
+  # 개인 API 토큰(PAT) 교환 — PatExchangeWebFilter가 auth-server 내부 엔드포인트를 호출한다.
+  # internal-secret이 비어 있으면 PAT 요청을 전부 401로 거부한다(fail-closed) — 열어두지 않는다.
+  auth-server-base-uri: ${AUTH_SERVER_BASE_URI:http://localhost:9000}
+  internal-secret: ${AGENT_INTERNAL_SECRET:}

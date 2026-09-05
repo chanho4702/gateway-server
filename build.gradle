@@ -29,8 +29,11 @@ dependencies {
     // JWT 조기차단(1차 방어) — 다운스트림 자체 검증(최종 방어)과 이중화
     implementation 'org.springframework.boot:spring-boot-starter-security'
     implementation 'org.springframework.boot:spring-boot-starter-oauth2-resource-server'
+    // PAT 교환 캐시 — 인스턴스 로컬(Redis 금지: 인증 캐시가 fail-open이면 취약점)
+    implementation 'com.github.ben-manes.caffeine:caffeine'
     testImplementation 'org.springframework.boot:spring-boot-starter-test'
     testImplementation 'org.springframework.boot:spring-boot-starter-webflux' // WebTestClient
+    testImplementation 'com.squareup.okhttp3:mockwebserver' // PAT 교환용 auth-server 스텁
 }
 tasks.named('test') { useJUnitPlatform() }
 tasks.named('bootJar') { archiveFileName = 'app.jar' }

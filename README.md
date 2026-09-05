@@ -36,6 +36,7 @@
   - 공개(permitAll): OPTIONS 프리플라이트 · `/oauth2/**` · `/login/**` · `/api/auth/**` · `/.well-known/**` · `/fallback/**` · `GET /api/board/posts/**`
   - 인증 필수: `/api/me` · `/api/org/**` · `/api/wiki/**` · `/api/alm/**` · **`/api/search/**`**(GraphQL·재색인 모두) · 그 외 전부
   - **경로 정책은 board-service SecurityConfig와 동기 유지할 것.** `/fallback/**`을 열어 두지 않으면 서킷브레이커가 forward한 내부 요청이 401로 죽는다.
+- **개인 API 토큰(PAT) 교환 — 보안 체인 앞** — 외부 클라이언트(스크립트·CI)가 `Authorization: Bearer chanho_pat_…` 로 기존 API를 부르면, `PatExchangeWebFilter`가 auth-server에서 플랫폼 JWT를 받아 헤더를 갈아끼운다. 다운스트림 서비스는 한 줄도 바뀌지 않는다 — 지금처럼 JWT만 본다(아래 전용 섹션).
 - **X-Forwarded 프록시 처리(trusted-proxies)** — nginx 통합배포처럼 게이트웨이 앞에 리버스 프록시를 두면, SCG 4.1+ 보안 기본값은 신뢰하지 않는 `X-Forwarded-*` 헤더를 제거한다. 그러면 nginx가 붙인 `X-Forwarded-Host`(localhost)가 auth-server에 도달하지 못해 OIDC `redirect_uri`가 eureka IP(:9000)로 구성되고 Keycloak이 거부한다. `trusted-proxies` 정규식으로 루프백 + 사설대역(도커 NAT 포함)을 신뢰하도록 열어 이 문제를 해결한다(아래 전용 섹션 참고).
 - **Rate limiting** — IP 기준. 인증 경로(`/api/auth/**` 5 req/s burst 10, `/oauth2/**`·`/login/**` 10/20)와 **검색 경로(`/api/search/**` 5/15)**. Redis 백엔드, **Redis 부재 시 fail-open**(요청 통과)이라 dev에서 Redis 없이도 동작 — 단 이때 해당 경로 요청마다 `Error calling rate limiter lua` ERROR 로그가 남는 것은 정상. **IP 키는 nginx 1홉 뒤의 실 클라이언트 IP**다 — `RateLimitConfig`가 `XForwardedRemoteAddressResolver.maxTrustedIndex(1)`로 `X-Forwarded-For`의 맨 오른쪽(nginx가 붙인 값)만 채택한다. `getRemoteAddress()`를 그대로 쓰면 nginx/도커 NAT IP 하나로 고정돼 전 클라이언트가 단일 버킷을 공유한다(정상 사용자 상호 차단 + 공격자 격리 불가). 신뢰 홉이 1개라 클라이언트가 XFF를 위조해도 무력하다.
 - **회복탄력성** — 전역 connect 3s/response 10s 타임아웃. board 라우트에 CircuitBreaker(+멱등 GET 한정 Retry 2회, 연결 실패=`IOException`만) → 불능 시 `/fallback/board` 503 `{"error":"board_unavailable"}`. Resilience4j TimeLimiter는 board 인스턴스에 11s로 명시(미설정 시 기본 1s가 정상 응답까지 잘라버림).
@@ -44,7 +45,7 @@
 - **서비스 디스커버리 — 라우트마다 다르다(하이브리드)** — 라우트 uri 기본값은 전부 `lb://<서비스명>`이고, 유레카 레지스트리(:8761)에서 인스턴스를 찾아 클라이언트 사이드 로드밸런싱(라운드로빈)한다. 유레카 서버가 잠깐 죽어도 로컬 캐시(30s 갱신)로 라우팅은 유지된다.
   **컨테이너 배포판도 유레카를 쓴다 — 다만 전부는 아니다.** `auth-server`·`board-service`는 컨테이너에서도 유레카에 등록하므로 `lb://`로 찾고(게이트웨이에 `EUREKA_URI`가 주입돼 있다), `org-service`·`search-service`는 `docker` 프로필에서 등록을 끄므로 `ORG_SERVICE_URI`/`SEARCH_SERVICE_URI`로 DNS 직결한다. `wiki-backend`도 `WIKI_SERVICE_URI`로 직결한다. 이 세 env가 빠지면 `lb://` 기본값이 해석될 방법이 없어 해당 경로가 통째로 503이 된다.
 
-**요청 처리 순서:** Security(CORS 프리플라이트 응답·JWT 검증·401 조기차단) → `RequestLoggingFilter`(`HIGHEST_PRECEDENCE` GlobalFilter — 401로 잘린 요청은 여기 안 옴) → 라우트 매칭(rate limit·CB 필터) → 다운스트림 프록시.
+**요청 처리 순서:** `PatExchangeWebFilter`(order -101, PAT→JWT 헤더 치환) → Security(CORS 프리플라이트 응답·JWT 검증·401 조기차단, `WebFilterChainProxy` order -100) → `RequestLoggingFilter`(`HIGHEST_PRECEDENCE` GlobalFilter — 401로 잘린 요청은 여기 안 옴) → 라우트 매칭(rate limit·CB 필터) → 다운스트림 프록시.
 
 ## 기술 스택
 
@@ -59,7 +60,9 @@ Spring Cloud Gateway **WebFlux** · Spring Boot **4.0.6** · Java **24** · Spri
 | `spring-boot-starter-data-redis-reactive` | RequestRateLimiter 토큰 버킷 저장소 |
 | `spring-cloud-starter-circuitbreaker-reactor-resilience4j` | CircuitBreaker·TimeLimiter 필터 |
 | `spring-boot-starter-security` + `oauth2-resource-server` | JWT 조기차단(1차 방어) |
+| `com.github.ben-manes.caffeine:caffeine` | PAT 교환 결과 인스턴스 로컬 캐시 |
 | `spring-boot-starter-webflux` (test only) | WebTestClient |
+| `com.squareup.okhttp3:mockwebserver` (test only) | PAT 교환 테스트용 auth-server 스텁 |
 
 > Boot 4 / Spring Cloud 2025.x 기준 설정 prefix는 `spring.cloud.gateway.server.webflux.*` 다. 구버전 문서의 `spring.cloud.gateway.routes` 예시를 그대로 붙여넣으면 라우트가 조용히 무시되니 주의.
 
@@ -116,6 +119,7 @@ Compose는 `EUREKA_URI`와 `ORG_SERVICE_URI`/`WIKI_SERVICE_URI`/`ALM_SERVICE_URI
 | `wiki-collaboration` | `/api/wiki/collaboration[/**]` | `ws://localhost:19150` / **docker: `COLLABORATION_SERVICE_URI`** | 1회 ticket 인증 Hocuspocus WebSocket. wiki보다 우선 |
 | `wiki` | `/api/wiki/**` | `lb://wiki-backend` / **docker: `WIKI_SERVICE_URI`** | 스페이스·페이지·첨부. 경로 불변 |
 | `alm` | `/api/alm/**` | `lb://alm-backend` / **docker: `ALM_SERVICE_URI`** | 프로젝트·이슈. 경로 불변 |
+| `agent` | `/api/agent/**` | `lb://agent-service` / **docker: `AGENT_SERVICE_URI`** | 에이전트 REST·MCP. 경로 불변. `/api/agent/mcp/**`만 게이트웨이 permitAll(서비스가 자체 인증) |
 | `search` | `/api/search/**` | `lb://search-service` / **docker: `SEARCH_SERVICE_URI`** | **`StripPrefix=2`** + RateLimiter 5/15 |
 
 ### `search` 라우트의 StripPrefix=2 (No StripPrefix 원칙의 유일한 예외)
@@ -167,12 +171,15 @@ search-service는 갖지 않는다 — GraphQL이 단일 URL이라 접두사를 
 | `WIKI_SERVICE_URI` | `lb://wiki-backend` (유레카 해석) | `http://wiki-backend:9110` (compose가 주입) |
 | `COLLABORATION_SERVICE_URI` | `ws://localhost:19150` | `ws://collaboration-service:9150` |
 | `ALM_SERVICE_URI` | `lb://alm-backend` (유레카 해석) | `http://alm-backend:9120` (**docker 필수** — 유레카 미등록) |
+| `AGENT_SERVICE_URI` | `lb://agent-service` (유레카 해석) | `http://agent-service:9160` |
 | `SEARCH_SERVICE_URI` | `lb://search-service` (유레카 해석) | `http://search-service:9140` (**docker 필수** — 유레카 미등록) |
 | `CORS_ALLOWED_ORIGIN` | `http://localhost:5173` | `http://localhost:5173` |
 | `AUTH_JWKS_URI` | `http://localhost:9000/.well-known/jwks.json` | `http://auth-server:9000/...` |
 | `PLATFORM_ISSUER` | `http://localhost:9000` | auth-server 발급 iss와 일치 |
 | `PLATFORM_AUDIENCE` | `platform-api` | auth-server 발급 aud와 일치 |
 | `REDIS_HOST` / `REDIS_PORT` | `localhost` / `6379` | `redis` / `6379` (없으면 rate limit fail-open) |
+| `AUTH_SERVER_BASE_URI` | `http://localhost:9000` (dev 프로필 `http://localhost:19000`) | `http://auth-server:9000` (docker 프로필 기본값) — PAT 교환 호출 대상 |
+| `AGENT_INTERNAL_SECRET` | **없음(빈 값)** → PAT 전부 401 | auth-server와 **같은 값**을 양쪽에 주입 (`openssl rand -hex 32`) |
 
 **Docker DNS 설명:** Docker Compose 네트워크 안에서는 `docker-compose.yml`의 **서비스명이 곧 DNS 호스트명**이 된다. 컨테이너끼리 `auth-server`, `wiki-backend`, `search-service` 등으로 직접 찾을 수 있어서, 환경변수에 `http://search-service:9140` 처럼 서비스명을 사용한다. 로컬 직접 실행 시에는 기본값인 `localhost`가 적용된다. (`CORS_ALLOWED_ORIGIN`은 **브라우저 주소창 기준** 오리진이므로 컨테이너 안에서도 `localhost:5173` 그대로다.)
 
@@ -203,6 +210,36 @@ trusted-proxies: "127\.0\.0\.1|::1|0:0:0:0:0:0:0:1|10\..*|172\.(1[6-9]|2[0-9]|3[
 ```
 
 > **dev 전용.** 운영에서는 실제 프록시(nginx) IP만 좁게 신뢰해야 한다. 이 사설대역 전체 허용은 로컬/도커 개발 편의를 위한 것이다. (이 문제는 SCG `trusted-proxies` 미설정과 stale Keycloak realm 2중 원인으로 나타났던 redirect_uri 거부의 게이트웨이 측 원인.)
+
+---
+
+## 개인 API 토큰(PAT) 교환 — `PatExchangeWebFilter`
+
+`filter/PatExchangeWebFilter.java` — 순수 `org.springframework.web.server.WebFilter`, **`@Order(-101)`**.
+
+**왜 `GlobalFilter`가 아닌가.** SCG의 `GlobalFilter`는 보안 체인(`WebFilterChainProxy`, order **-100**) *뒤*에 실행된다. PAT는 JWT가 아니므로 그 자리에 오기 전에 이미 401로 잘린다. 그래서 -101의 `WebFilter`로 보안 체인보다 한 칸 앞에 세운다. 이 순서가 이 기능의 유일한 성립 조건이라 `PatExchangeFilterOrderTest`가 실제 컨텍스트의 `List<WebFilter>` 인덱스로 회귀를 막는다.
+
+동작:
+
+1. `Authorization: Bearer chanho_pat_…`(스킴 대소문자 무시)일 때만 개입한다. 일반 JWT Bearer·헤더 없는 요청은 **손대지 않고** 통과시킨다.
+2. 캐시(Caffeine, 키 = `hex(sha256(원문토큰))`) 조회 → 히트면 헤더를 `Bearer <jwt>`로 치환하고 체인 계속.
+3. 미스면 `POST {AUTH_SERVER_BASE_URI}/internal/pat/exchange`(헤더 `X-Internal-Secret`, 본문 `{"token":"…"}`), 타임아웃 **2s**.
+
+| auth-server 응답 | 게이트웨이 | 캐시 |
+|---|---|---|
+| 200 `{accessToken, expiresInSeconds}` | 헤더를 `Bearer <jwt>`로 치환 후 체인 계속 | 성공 60s (단 JWT 만료 **30초 전**까지만 재사용) |
+| 401 `{"error":"invalid_token"}` | **401** `{"error":"invalid_token"}` (application/json, UTF-8) | 부정 10s — 무차별 대입이 매 요청 auth-server를 때리지 못하게 |
+| 403(비밀 불일치) · 5xx · 타임아웃 · 연결 실패 | **503** `{"error":"auth_unavailable"}` | 안 함 — 장애는 곧 풀릴 수 있고 그 사이 정상 토큰을 막을 이유가 없다 |
+
+**fail-closed 두 가지.**
+- `AGENT_INTERNAL_SECRET`이 비어 있으면 교환을 시도조차 하지 않고 PAT 요청을 **전부 401**로 거부한다. 기동 시 WARN 한 줄이 남는다. 비밀 없이 열어두면 인증이 통째로 무력화되므로 "동작 안 함"이 옳은 실패다.
+- 403(비밀 불일치)을 401로 접지 않는다. 배포 설정 오류를 "네 토큰이 틀렸다"로 바꾸면 정상 토큰이 부정 캐시에 들어간다.
+
+**캐시는 Redis가 아니라 Caffeine 인스턴스 로컬이다.** rate limiter는 Redis 부재 시 fail-open이어도 되지만(요청 통과), 인증 캐시가 같은 성질을 가지면 그대로 취약점이다. 대가는 폐기 반영 지연 — 토큰을 폐기해도 최대 60초(캐시 TTL) 동안 통과할 수 있고, 게이트웨이 인스턴스가 여러 개면 인스턴스마다 따로 캐시한다. 즉시 차단이 필요하면 `POSITIVE_TTL`을 줄인다.
+
+**로그에 원문 토큰을 남기지 않는다** — 해시 앞 8자만 `tokenHash=`로 남긴다. auth-server 불능은 `error`(운영 알람), 토큰 거부는 `warn`.
+
+**CORS 주의**: 이 필터는 Security의 CORS 처리보다 앞이라 필터가 직접 쓰는 401/503 응답에는 CORS 헤더가 붙지 않는다. PAT는 스크립트·CI용이고 브라우저(myFront)는 세션 JWT를 쓰므로 실사용 영향은 없다. 브라우저에서 PAT를 직접 쓰게 되면 이 지점을 먼저 손봐야 한다.
 
 ---
 
@@ -244,14 +281,16 @@ $env:JAVA_HOME = 'C:\Program Files\Java\jdk-24'
 
 | 테스트 | 개수 | 검증 내용 |
 |---|---|---|
-| `RouteConfigTest` | 6 | 라우트 id 10개 등록 + 기본 uri가 `lb://`(제품 4서비스 포함) + 인증 라우트의 RequestRateLimiter + **`search`만 `StripPrefix parts = 2`이고 org/wiki/alm에는 없음** + search 라우트의 rate limiter |
+| `RouteConfigTest` | 7 | 라우트 id 13개 등록(`agent` 포함) + 기본 uri가 `lb://`(제품 4서비스 포함) + 인증 라우트의 RequestRateLimiter + **`search`만 `StripPrefix parts = 2`이고 org/wiki/alm에는 없음** + search 라우트의 rate limiter |
 | `CorsTest` | 1 | `:5173` 오리진의 프리플라이트(OPTIONS)가 200 + `Access-Control-Allow-Origin` 응답 |
-| `SecurityConfigTest` | 5 | 보호 경로 무토큰/위조 토큰 401(+401에도 CORS 헤더), 공개 경로는 보안 통과, **`/api/search/graphql`·`/api/search/admin/reindex[/{id}]` 무토큰 401** |
+| `SecurityConfigTest` | 8 | 보호 경로 무토큰/위조 토큰 401(+401에도 CORS 헤더), 공개 경로는 보안 통과, **`/api/search/graphql`·`/api/search/admin/reindex[/{id}]` 무토큰 401**, `/api/agent/**` 무토큰 401 · `/api/agent/mcp/**`는 보안 통과 |
 | `AudienceValidatorTest` | 3 | aud 클레임 일치/불일치 검증 |
 | `BoardFallbackTest` | 2 | board 다운 시 fallback 503 JSON |
 | `SlowBoardDownstreamTest` | 1 | 느린 다운스트림에서 타임아웃/CB 동작 |
 | `HttpClientTimeoutTest` | 1 | 전역 connect/response 타임아웃 바인딩 |
 | `IpKeyResolverTest` | 4 | rate limit 키 = nginx 뒤 XFF 실 클라이언트 IP (없으면 "unknown") |
+| `PatExchangeWebFilterTest` | 13 | MockWebServer로 auth-server를 세우고 필터 단독 검증 — PAT→다운스트림이 보는 `Bearer <jwt>`, 캐시 히트 시 auth-server 미호출, JWT 만료 30초 가드, 401 부정 캐시, 5xx/403/타임아웃 → 503(캐시 안 함), 비밀 미설정 시 호출 없이 401, JWT·무헤더·Basic 무변경 |
+| `PatExchangeFilterOrderTest` | 2 | 실제 컨텍스트의 `List<WebFilter>`에서 PAT 필터가 `WebFilterChainProxy`보다 앞 + PAT 요청이 Security가 아닌 필터에게 거부됨(본문 `invalid_token`) |
 | `RequestLoggingFilterTest` | 4 | `X-Request-Id` 생성/보존/형식 검증 후 재발급 + 헤더 1개 유지 |
 
 빌드 산출물: `bootJar` → `build/libs/app.jar` (archiveFileName 고정, Dockerfile이 이 이름으로 복사).
@@ -279,7 +318,11 @@ src/main/java/com/platform/gateway/
 │  └─ SecurityConfig.java           JWT 조기차단 보안체인 + JWKS 디코더 + CORS 단일 소스
 ├─ security/AudienceValidator.java  aud 클레임 검증 (board-service와 동일 패턴)
 ├─ web/FallbackController.java      /fallback/board → 503
-└─ filter/RequestLoggingFilter.java GlobalFilter: X-Request-Id 검증/재발급 + 요청 1줄 로깅
+└─ filter/
+   ├─ RequestLoggingFilter.java   GlobalFilter: X-Request-Id 검증/재발급 + 요청 1줄 로깅
+   ├─ PatExchangeWebFilter.java   WebFilter(order -101): PAT→JWT 헤더 치환 + Caffeine 캐시
+   ├─ PatExchangeClient.java      auth-server /internal/pat/exchange 호출(2s 타임아웃)
+   └─ PatExchangeResult.java      성공/무효/불능 3분기 sealed 결과
 src/main/resources/
 ├─ application.yml                  라우트 10개(+rate limit·CB·StripPrefix 필터) + trusted-proxies + 타임아웃 + platform.* 계약
 ├─ application-dev.yml              dev 오프셋(:18000, Redis db1, dev eureka/JWKS)
@@ -298,4 +341,7 @@ Dockerfile                          런타임 전용 (temurin:24-jre, build/libs
 - **다운스트림이 `Port 910x was already in use`로 기동 실패 (리스너 없음)** → Docker/Hyper-V가 부팅 시 예약한 포트 제외 범위에 걸린 것. `netsh interface ipv4 show excludedportrange protocol=tcp`로 확인 후 범위 밖 포트로 기동(`$env:SERVER_PORT`). 유레카 덕에 포트를 바꿔도 게이트웨이 설정은 불변.
 - **브라우저 콘솔에 CORS 에러** → 프론트 오리진이 `CORS_ALLOWED_ORIGIN`과 정확히 일치하는지(스킴·호스트·포트) 확인. 쿠키가 필요한 요청은 프론트에서 `credentials: 'include'`도 필요.
 - **다운스트림에서 CORS 헤더가 중복** → auth-server/board-service에 CORS 설정이 남아 있는 것. 다운스트림 CORS는 전부 제거해야 한다(게이트웨이 단일 책임).
+- **PAT가 항상 401 `invalid_token`** → 게이트웨이에 `AGENT_INTERNAL_SECRET`이 없다(기동 로그의 WARN 확인). auth-server와 **같은 값**을 양쪽에 주입해야 한다. 값이 서로 다르면 401이 아니라 503 `auth_unavailable`이 난다.
+- **PAT가 503 `auth_unavailable`** → auth-server 불능이거나 비밀 불일치. 게이트웨이 로그의 `reason=`을 본다(`status_403`=비밀 불일치, `status_5xx`=auth-server 오류, `TimeoutException`=2s 초과).
+- **토큰을 폐기했는데 잠깐 더 통과한다** → 정상이다. 성공 캐시 60s + 교환 JWT 300s 설계상 최대 60초 지연된다.
 - **`:8000` 기동 실패(Address already in use)** → 이전 gateway 프로세스가 살아 있음. `netstat -ano | findstr :8000` 후 해당 PID 종료.
