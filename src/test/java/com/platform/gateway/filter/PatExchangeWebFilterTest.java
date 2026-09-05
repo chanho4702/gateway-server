@@ -26,6 +26,8 @@ class PatExchangeWebFilterTest {
 
     private static final String PAT = "chanho_pat_" + "A".repeat(43);
     private static final String JWT = "header.payload.signature";
+    /** agent-service 자체 PAT — 접두사가 다르므로 이 필터의 소관이 아니다. */
+    private static final String AGENT_PAT = "agp_" + "B".repeat(40);
 
     private MockWebServer authServer;
     private final AtomicReference<String> downstreamAuthHeader = new AtomicReference<>();
@@ -45,8 +47,13 @@ class PatExchangeWebFilterTest {
     // --- 도우미 -------------------------------------------------------------
 
     private WebTestClient clientWithSecret(String secret) {
-        PatExchangeClient exchangeClient =
-                new PatExchangeClient(WebClient.builder(), authServer.url("/").toString(), secret);
+        return clientWith(secret, Duration.ofSeconds(15));
+    }
+
+    /** 타임아웃은 테스트마다 정한다 — 빌드 머신이 바쁠 때 프로덕션 2s가 정상 경로를 503으로 뒤집는다. */
+    private WebTestClient clientWith(String secret, Duration exchangeTimeout) {
+        PatExchangeClient exchangeClient = new PatExchangeClient(
+                WebClient.builder(), authServer.url("/").toString(), secret, exchangeTimeout);
         WebHandler downstream = exchange -> {
             downstreamCalled.set(true);
             downstreamAuthHeader.set(exchange.getRequest().getHeaders().getFirst(HttpHeaders.AUTHORIZATION));
@@ -198,9 +205,10 @@ class PatExchangeWebFilterTest {
 
     @Test
     void authServerTimeoutReturns503() {
-        authServer.enqueue(exchangeOk(JWT, 300).setBodyDelay(3, TimeUnit.SECONDS)); // 클라이언트 타임아웃 2s
+        // 교환 타임아웃 500ms < 응답 지연 2s — 프로덕션은 2s지만 여기서는 비율만 재현하면 된다.
+        authServer.enqueue(exchangeOk(JWT, 300).setBodyDelay(2, TimeUnit.SECONDS));
 
-        client().get().uri("/api/me").header(HttpHeaders.AUTHORIZATION, "Bearer " + PAT)
+        clientWith("test-internal-secret", Duration.ofMillis(500)).get().uri("/api/me").header(HttpHeaders.AUTHORIZATION, "Bearer " + PAT)
                 .exchange()
                 .expectStatus().isEqualTo(503)
                 .expectBody().jsonPath("$.error").isEqualTo("auth_unavailable");
@@ -244,6 +252,22 @@ class PatExchangeWebFilterTest {
         assertThat(authServer.getRequestCount()).isZero();
     }
 
+    /**
+     * agent-service는 `/api/agent/mcp/**` 로 자기 PAT(`agp_…`)를 받아 스스로 검증한다.
+     * 게이트웨이가 이 토큰을 교환 대상으로 착각해 헤더를 갈아끼우면 agent-service의 인증이 통째로 깨진다.
+     * 우리 소관은 `chanho_pat_` 접두사 하나뿐이다 — 나머지 Bearer는 원문 그대로 흘려보낸다.
+     */
+    @Test
+    void agentServicePatWithDifferentPrefixPassesThroughUntouched() {
+        client().post().uri("/api/agent/mcp/tools/call")
+                .header(HttpHeaders.AUTHORIZATION, "Bearer " + AGENT_PAT)
+                .exchange()
+                .expectStatus().isOk();
+
+        assertThat(downstreamAuthHeader.get()).isEqualTo("Bearer " + AGENT_PAT);
+        assertThat(authServer.getRequestCount()).isZero();
+    }
+
     @Test
     void nonBearerSchemeIsNotTreatedAsPat() {
         client().get().uri("/api/me")
@@ -262,6 +286,8 @@ class PatExchangeWebFilterTest {
         assertThat(PatExchangeWebFilter.extractPatToken("Bearer " + PAT)).isEqualTo(PAT);
         assertThat(PatExchangeWebFilter.extractPatToken("BEARER " + PAT)).isEqualTo(PAT);
         assertThat(PatExchangeWebFilter.extractPatToken("Bearer " + JWT)).isNull();
+        assertThat(PatExchangeWebFilter.extractPatToken("Bearer " + AGENT_PAT)).isNull(); // agent-service PAT
+        assertThat(PatExchangeWebFilter.extractPatToken("Bearer chanho_pat")).isNull();   // 접두사 미완성
         assertThat(PatExchangeWebFilter.extractPatToken("Bearer")).isNull();
         assertThat(PatExchangeWebFilter.extractPatToken("")).isNull();
         assertThat(PatExchangeWebFilter.extractPatToken(null)).isNull();

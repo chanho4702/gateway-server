@@ -26,11 +26,12 @@ public class PatExchangeClient {
 
     private static final Logger log = LoggerFactory.getLogger(PatExchangeClient.class);
     /** auth-server가 죽어 있을 때 게이트웨이 스레드를 붙잡아두지 않는다 — 단일 진입점이 함께 느려진다. */
-    private static final Duration TIMEOUT = Duration.ofSeconds(2);
+    private static final Duration DEFAULT_TIMEOUT = Duration.ofSeconds(2);
     private static final long DEFAULT_TTL_SECONDS = 300;
 
     private final WebClient webClient;
     private final String internalSecret;
+    private final Duration timeout;
 
     // WebClient.Builder 빈은 이 컨텍스트에 없다(게이트웨이 스타터는 WebClient 자동설정을 끌고 오지 않는다).
     // 자동설정에 기대는 대신 직접 만든다 — 이 클라이언트가 쓰는 건 JSON 코덱 하나뿐이다.
@@ -42,8 +43,18 @@ public class PatExchangeClient {
 
     /** 테스트용 — MockWebServer 주소와 임의 빌더를 직접 주입한다. */
     PatExchangeClient(WebClient.Builder builder, String authServerBaseUri, String internalSecret) {
+        this(builder, authServerBaseUri, internalSecret, DEFAULT_TIMEOUT);
+    }
+
+    /**
+     * 테스트용 — 타임아웃까지 지정한다. 프로덕션 값(2s)을 테스트에 그대로 쓰면 빌드 머신이 바쁠 때
+     * 정상 경로가 타임아웃으로 넘어가 스위트가 흔들린다(실측). 타임아웃 자체를 보는 테스트만 짧게 잡는다.
+     */
+    PatExchangeClient(WebClient.Builder builder, String authServerBaseUri, String internalSecret,
+                      Duration timeout) {
         this.webClient = builder.baseUrl(authServerBaseUri).build();
         this.internalSecret = internalSecret == null ? "" : internalSecret.trim();
+        this.timeout = timeout;
     }
 
     @PostConstruct
@@ -81,7 +92,7 @@ public class PatExchangeClient {
                     return response.releaseBody()
                             .thenReturn((PatExchangeResult) new PatExchangeResult.Unavailable("status_" + status));
                 })
-                .timeout(TIMEOUT)
+                .timeout(timeout)
                 .onErrorResume(e -> Mono.just(new PatExchangeResult.Unavailable(e.getClass().getSimpleName())));
     }
 

@@ -222,6 +222,7 @@ trusted-proxies: "127\.0\.0\.1|::1|0:0:0:0:0:0:0:1|10\..*|172\.(1[6-9]|2[0-9]|3[
 동작:
 
 1. `Authorization: Bearer chanho_pat_…`(스킴 대소문자 무시)일 때만 개입한다. 일반 JWT Bearer·헤더 없는 요청은 **손대지 않고** 통과시킨다.
+   - **접두사가 유일한 판별 기준이다.** agent-service는 `/api/agent/mcp/**` 로 자기 PAT(`agp_…`)를 받아 스스로 검증하는데, 게이트웨이가 그걸 교환 대상으로 착각해 헤더를 갈아끼우면 그쪽 인증이 통째로 깨진다. `chanho_pat_` 이외의 Bearer는 원문 그대로 흘려보내며 `PatExchangeWebFilterTest`가 이 케이스를 고정한다.
 2. 캐시(Caffeine, 키 = `hex(sha256(원문토큰))`) 조회 → 히트면 헤더를 `Bearer <jwt>`로 치환하고 체인 계속.
 3. 미스면 `POST {AUTH_SERVER_BASE_URI}/internal/pat/exchange`(헤더 `X-Internal-Secret`, 본문 `{"token":"…"}`), 타임아웃 **2s**.
 
@@ -289,7 +290,7 @@ $env:JAVA_HOME = 'C:\Program Files\Java\jdk-24'
 | `SlowBoardDownstreamTest` | 1 | 느린 다운스트림에서 타임아웃/CB 동작 |
 | `HttpClientTimeoutTest` | 1 | 전역 connect/response 타임아웃 바인딩 |
 | `IpKeyResolverTest` | 4 | rate limit 키 = nginx 뒤 XFF 실 클라이언트 IP (없으면 "unknown") |
-| `PatExchangeWebFilterTest` | 13 | MockWebServer로 auth-server를 세우고 필터 단독 검증 — PAT→다운스트림이 보는 `Bearer <jwt>`, 캐시 히트 시 auth-server 미호출, JWT 만료 30초 가드, 401 부정 캐시, 5xx/403/타임아웃 → 503(캐시 안 함), 비밀 미설정 시 호출 없이 401, JWT·무헤더·Basic 무변경 |
+| `PatExchangeWebFilterTest` | 14 | MockWebServer로 auth-server를 세우고 필터 단독 검증 — PAT→다운스트림이 보는 `Bearer <jwt>`, 캐시 히트 시 auth-server 미호출, JWT 만료 30초 가드, 401 부정 캐시, 5xx/403/타임아웃 → 503(캐시 안 함), 비밀 미설정 시 호출 없이 401, JWT·무헤더·Basic·agent-service PAT(`agp_…`) 무변경 |
 | `PatExchangeFilterOrderTest` | 2 | 실제 컨텍스트의 `List<WebFilter>`에서 PAT 필터가 `WebFilterChainProxy`보다 앞 + PAT 요청이 Security가 아닌 필터에게 거부됨(본문 `invalid_token`) |
 | `RequestLoggingFilterTest` | 4 | `X-Request-Id` 생성/보존/형식 검증 후 재발급 + 헤더 1개 유지 |
 
