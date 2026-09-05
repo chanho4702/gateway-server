@@ -1,5 +1,6 @@
 package com.platform.gateway.filter;
 
+import com.github.benmanes.caffeine.cache.Ticker;
 import okhttp3.mockwebserver.MockResponse;
 import okhttp3.mockwebserver.MockWebServer;
 import okhttp3.mockwebserver.RecordedRequest;
@@ -14,6 +15,7 @@ import org.springframework.web.server.WebHandler;
 
 import java.time.Duration;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -30,6 +32,9 @@ class PatExchangeWebFilterTest {
     private static final String AGENT_PAT = "agp_" + "B".repeat(40);
 
     private MockWebServer authServer;
+    /** 캐시 만료를 실시간 대기 없이 앞당기기 위한 가짜 시계(나노초). */
+    private final AtomicLong nanos = new AtomicLong();
+    private final Ticker ticker = nanos::get;
     private final AtomicReference<String> downstreamAuthHeader = new AtomicReference<>();
     private final AtomicReference<Boolean> downstreamCalled = new AtomicReference<>(false);
 
@@ -61,7 +66,7 @@ class PatExchangeWebFilterTest {
             return exchange.getResponse().setComplete();
         };
         return WebTestClient.bindToWebHandler(downstream)
-                .webFilter(new PatExchangeWebFilter(exchangeClient))
+                .webFilter(new PatExchangeWebFilter(exchangeClient, ticker))
                 .configureClient()
                 .responseTimeout(Duration.ofSeconds(20))
                 .build();
@@ -172,9 +177,12 @@ class PatExchangeWebFilterTest {
         assertThat(downstreamCalled.get()).isFalse();
     }
 
+    /**
+     * 403 비밀 불일치처럼 영구적 설정 오류면 모든 PAT 요청이 2초 타임아웃까지 auth-server를 때린다.
+     * 아주 짧은(2s) 불능 캐시가 그 폭주를 막는다 — 그 사이 재요청은 auth-server를 부르지 않는다.
+     */
     @Test
-    void authServerErrorReturns503AndIsNotCached() {
-        authServer.enqueue(errorResponse(500, "boom"));
+    void authServerErrorReturns503AndIsCachedBriefly() {
         authServer.enqueue(errorResponse(500, "boom"));
         WebTestClient client = client();
 
@@ -183,13 +191,51 @@ class PatExchangeWebFilterTest {
                 .expectStatus().isEqualTo(503)
                 .expectBody().jsonPath("$.error").isEqualTo("auth_unavailable");
 
-        // 장애는 곧 풀릴 수 있으므로 캐시하지 않는다 — 다음 요청은 다시 시도한다.
+        nanos.addAndGet(Duration.ofMillis(1900).toNanos()); // 아직 2초 안
         client.get().uri("/api/me").header(HttpHeaders.AUTHORIZATION, "Bearer " + PAT)
                 .exchange()
-                .expectStatus().isEqualTo(503);
+                .expectStatus().isEqualTo(503)
+                .expectBody().jsonPath("$.error").isEqualTo("auth_unavailable");
+
+        assertThat(authServer.getRequestCount()).isEqualTo(1);
+        assertThat(downstreamCalled.get()).isFalse();
+    }
+
+    /**
+     * 불능 캐시가 정상 토큰을 오래 가두면 안 된다 — 2초가 지나면 곧바로 재시도하고,
+     * auth-server가 회복돼 있으면 그 요청부터 통과한다.
+     */
+    @Test
+    void unavailableEntryExpiresAfterTwoSecondsAndRetriesAuthServer() {
+        authServer.enqueue(errorResponse(500, "boom"));
+        authServer.enqueue(exchangeOk(JWT, 300)); // 회복
+        WebTestClient client = client();
+
+        client.get().uri("/api/me").header(HttpHeaders.AUTHORIZATION, "Bearer " + PAT)
+                .exchange().expectStatus().isEqualTo(503);
+
+        nanos.addAndGet(Duration.ofMillis(2100).toNanos()); // 2초 경과
+        client.get().uri("/api/me").header(HttpHeaders.AUTHORIZATION, "Bearer " + PAT)
+                .exchange().expectStatus().isOk();
 
         assertThat(authServer.getRequestCount()).isEqualTo(2);
-        assertThat(downstreamCalled.get()).isFalse();
+        assertThat(downstreamAuthHeader.get()).isEqualTo("Bearer " + JWT);
+    }
+
+    /** 무효(401) 항목은 10초짜리다 — 2초로 짧아진 불능 TTL과 섞이지 않았는지 확인한다. */
+    @Test
+    void invalidEntryOutlivesTheUnavailableTtl() {
+        authServer.enqueue(errorResponse(401, "{\"error\":\"invalid_token\"}"));
+        WebTestClient client = client();
+
+        client.get().uri("/api/me").header(HttpHeaders.AUTHORIZATION, "Bearer " + PAT)
+                .exchange().expectStatus().isUnauthorized();
+
+        nanos.addAndGet(Duration.ofSeconds(5).toNanos()); // 불능 TTL(2s)은 지났지만 무효 TTL(10s)은 남았다
+        client.get().uri("/api/me").header(HttpHeaders.AUTHORIZATION, "Bearer " + PAT)
+                .exchange().expectStatus().isUnauthorized();
+
+        assertThat(authServer.getRequestCount()).isEqualTo(1);
     }
 
     /** 비밀 불일치(403)는 배포 설정 오류다 — 사용자 토큰을 무효라고 단정하지 않고 불능으로 올린다. */

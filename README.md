@@ -230,10 +230,12 @@ trusted-proxies: "127\.0\.0\.1|::1|0:0:0:0:0:0:0:1|10\..*|172\.(1[6-9]|2[0-9]|3[
 |---|---|---|
 | 200 `{accessToken, expiresInSeconds}` | 헤더를 `Bearer <jwt>`로 치환 후 체인 계속 | 성공 60s (단 JWT 만료 **30초 전**까지만 재사용) |
 | 401 `{"error":"invalid_token"}` | **401** `{"error":"invalid_token"}` (application/json, UTF-8) | 부정 10s — 무차별 대입이 매 요청 auth-server를 때리지 못하게 |
-| 403(비밀 불일치) · 5xx · 타임아웃 · 연결 실패 | **503** `{"error":"auth_unavailable"}` | 안 함 — 장애는 곧 풀릴 수 있고 그 사이 정상 토큰을 막을 이유가 없다 |
+| 403(비밀 불일치) · 5xx · 타임아웃 · 연결 실패 | **503** `{"error":"auth_unavailable"}` | 불능 **2s** — 아래 |
+
+**불능 캐시가 2초인 이유.** 403 비밀 불일치처럼 영구적인 설정 오류면 모든 PAT 요청이 2초 타임아웃까지 auth-server를 계속 때린다 — 그래서 캐시가 필요하다. 반대로 이 값이 길면 장애가 풀린 뒤에도 정상 토큰이 그만큼 갇힌다 — 그래서 짧아야 한다. 2초는 교환 타임아웃과 같은 크기이고, 성공 60s·무효 10s와 함께 `Expiry` 구현이 항목별로 적용한다.
 
 **fail-closed 두 가지.**
-- `AGENT_INTERNAL_SECRET`이 비어 있으면 교환을 시도조차 하지 않고 PAT 요청을 **전부 401**로 거부한다. 기동 시 WARN 한 줄이 남는다. 비밀 없이 열어두면 인증이 통째로 무력화되므로 "동작 안 함"이 옳은 실패다.
+- `AGENT_INTERNAL_SECRET`이 비어 있으면 교환을 시도조차 하지 않고 PAT 요청을 **전부 401**로 거부한다. 알림은 **기동 시 WARN 한 줄**뿐이고(`PatExchangeClient`) 요청별 거부는 DEBUG다 — 요청마다 WARN을 찍으면 설정이 빠진 환경에서 PAT 트래픽만큼 경고가 쌓여 진짜 경고가 묻힌다. 비밀 없이 열어두면 인증이 통째로 무력화되므로 "동작 안 함"이 옳은 실패다.
 - 403(비밀 불일치)을 401로 접지 않는다. 배포 설정 오류를 "네 토큰이 틀렸다"로 바꾸면 정상 토큰이 부정 캐시에 들어간다.
 
 **캐시는 Redis가 아니라 Caffeine 인스턴스 로컬이다.** rate limiter는 Redis 부재 시 fail-open이어도 되지만(요청 통과), 인증 캐시가 같은 성질을 가지면 그대로 취약점이다. 대가는 폐기 반영 지연 — 토큰을 폐기해도 최대 60초(캐시 TTL) 동안 통과할 수 있고, 게이트웨이 인스턴스가 여러 개면 인스턴스마다 따로 캐시한다. 즉시 차단이 필요하면 `POSITIVE_TTL`을 줄인다.
@@ -290,7 +292,7 @@ $env:JAVA_HOME = 'C:\Program Files\Java\jdk-24'
 | `SlowBoardDownstreamTest` | 1 | 느린 다운스트림에서 타임아웃/CB 동작 |
 | `HttpClientTimeoutTest` | 1 | 전역 connect/response 타임아웃 바인딩 |
 | `IpKeyResolverTest` | 4 | rate limit 키 = nginx 뒤 XFF 실 클라이언트 IP (없으면 "unknown") |
-| `PatExchangeWebFilterTest` | 14 | MockWebServer로 auth-server를 세우고 필터 단독 검증 — PAT→다운스트림이 보는 `Bearer <jwt>`, 캐시 히트 시 auth-server 미호출, JWT 만료 30초 가드, 401 부정 캐시, 5xx/403/타임아웃 → 503(캐시 안 함), 비밀 미설정 시 호출 없이 401, JWT·무헤더·Basic·agent-service PAT(`agp_…`) 무변경 |
+| `PatExchangeWebFilterTest` | 16 | MockWebServer로 auth-server를 세우고 필터 단독 검증 — PAT→다운스트림이 보는 `Bearer <jwt>`, 캐시 히트 시 auth-server 미호출, JWT 만료 30초 가드, 401 부정 캐시 10s, 5xx/403/타임아웃 → 503(불능 캐시 2s, 2초 뒤 재시도가 auth-server를 다시 호출), 비밀 미설정 시 호출 없이 401, JWT·무헤더·Basic·agent-service PAT(`agp_…`) 무변경 |
 | `PatExchangeFilterOrderTest` | 2 | 실제 컨텍스트의 `List<WebFilter>`에서 PAT 필터가 `WebFilterChainProxy`보다 앞 + PAT 요청이 Security가 아닌 필터에게 거부됨(본문 `invalid_token`) |
 | `RequestLoggingFilterTest` | 4 | `X-Request-Id` 생성/보존/형식 검증 후 재발급 + 헤더 1개 유지 |
 

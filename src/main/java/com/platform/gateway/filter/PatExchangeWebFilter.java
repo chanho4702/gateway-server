@@ -3,8 +3,10 @@ package com.platform.gateway.filter;
 import com.github.benmanes.caffeine.cache.Cache;
 import com.github.benmanes.caffeine.cache.Caffeine;
 import com.github.benmanes.caffeine.cache.Expiry;
+import com.github.benmanes.caffeine.cache.Ticker;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.core.annotation.Order;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
@@ -46,7 +48,13 @@ public class PatExchangeWebFilter implements WebFilter {
     static final String PAT_PREFIX = "chanho_pat_";
     private static final String BEARER = "bearer ";
     private static final Duration POSITIVE_TTL = Duration.ofSeconds(60);
-    private static final Duration NEGATIVE_TTL = Duration.ofSeconds(10);
+    private static final Duration INVALID_TTL = Duration.ofSeconds(10);
+    /**
+     * 불능(503) 항목의 수명. 아주 짧게 잡는 이유가 양쪽에 있다 — 403 비밀 불일치처럼 영구적인 설정 오류일 때
+     * 모든 PAT 요청이 2초 타임아웃까지 auth-server를 계속 때리는 폭주를 막아야 하고(캐시가 필요한 이유),
+     * 동시에 장애가 풀린 뒤 정상 토큰이 갇히는 시간이 이 값을 넘으면 안 된다(짧아야 하는 이유).
+     */
+    private static final Duration UNAVAILABLE_TTL = Duration.ofSeconds(2);
     /** 캐시된 JWT는 만료 30초 전까지만 재쓴다 — 다운스트림 도착 직후 만료되는 토큰을 넘기지 않기 위해. */
     private static final Duration EXPIRY_GUARD = Duration.ofSeconds(30);
     private static final int MAX_ENTRIES = 10_000;
@@ -56,11 +64,19 @@ public class PatExchangeWebFilter implements WebFilter {
     private final PatExchangeClient client;
     private final Cache<String, CacheEntry> cache;
 
+    // 생성자가 둘이면 스프링은 기본 생성자를 찾다가 기동에 실패한다 — 주입 대상을 명시한다.
+    @Autowired
     public PatExchangeWebFilter(PatExchangeClient client) {
+        this(client, Ticker.systemTicker());
+    }
+
+    /** 테스트용 — 가짜 Ticker로 캐시 만료를 실시간 대기 없이 앞당긴다. */
+    PatExchangeWebFilter(PatExchangeClient client, Ticker ticker) {
         this.client = client;
         this.cache = Caffeine.newBuilder()
                 .maximumSize(MAX_ENTRIES)
-                // 성공 60s / 실패 10s — 항목마다 수명이 다르므로 고정 expireAfterWrite로는 표현할 수 없다.
+                .ticker(ticker)
+                // 성공 60s / 무효 10s / 불능 2s — 항목마다 수명이 다르므로 고정 expireAfterWrite로는 표현할 수 없다.
                 .expireAfter(new Expiry<String, CacheEntry>() {
                     @Override
                     public long expireAfterCreate(String key, CacheEntry value, long currentTime) {
@@ -92,16 +108,19 @@ public class PatExchangeWebFilter implements WebFilter {
         String key = sha256Hex(rawToken);
         if (!client.isEnabled()) {
             // 비밀 미설정 = 교환 불가. 열어주는 대신 닫는다(fail-closed).
-            log.warn("PAT 교환 비활성(AGENT_INTERNAL_SECRET 없음) — 거부 tokenHash={}", hint(key));
+            // 요청마다가 아니라 기동 시 WARN 한 줄로 알린다(PatExchangeClient) — 여기서 WARN을 찍으면
+            // 설정이 빠진 환경에서 PAT 트래픽만큼 경고가 쌓여 진짜 경고가 묻힌다.
+            log.debug("PAT 교환 비활성(AGENT_INTERNAL_SECRET 없음) — 거부 tokenHash={}", hint(key));
             return unauthorized(exchange);
         }
 
         CacheEntry cached = cache.getIfPresent(key);
         if (cached != null && cached.usable(Instant.now())) {
-            if (cached.negative()) {
-                return unauthorized(exchange);
-            }
-            return chain.filter(withJwt(exchange, cached.accessToken()));
+            return switch (cached.kind()) {
+                case SUCCESS -> chain.filter(withJwt(exchange, cached.accessToken()));
+                case INVALID -> unauthorized(exchange);
+                case UNAVAILABLE -> writeError(exchange, HttpStatus.SERVICE_UNAVAILABLE, "auth_unavailable");
+            };
         }
 
         return client.exchange(rawToken).flatMap(result -> switch (result) {
@@ -117,7 +136,9 @@ public class PatExchangeWebFilter implements WebFilter {
                 yield unauthorized(exchange);
             }
             case PatExchangeResult.Unavailable u -> {
-                // 캐시하지 않는다 — 장애는 곧 풀릴 수 있고, 그 사이 정상 토큰을 막을 이유가 없다.
+                // 2초만 캐시한다 — 403 비밀 불일치처럼 영구적 설정 오류일 때 모든 PAT 요청이
+                // 2초 타임아웃까지 auth-server를 때리는 폭주를 막되, 장애가 풀리면 곧바로 재시도한다.
+                cache.put(key, CacheEntry.unavailable());
                 log.error("PAT 교환 불가(auth-server) reason={} tokenHash={}", u.reason(), hint(key));
                 yield writeError(exchange, HttpStatus.SERVICE_UNAVAILABLE, "auth_unavailable");
             }
@@ -169,23 +190,31 @@ public class PatExchangeWebFilter implements WebFilter {
         }
     }
 
+    /** 캐시 항목의 종류. 셋 다 수명이 다르고, 히트했을 때 내보내는 응답도 다르다. */
+    private enum Kind { SUCCESS, INVALID, UNAVAILABLE }
+
     /**
-     * 캐시 항목. 성공이면 JWT와 그 만료시각을, 실패면 부정 표식만 담는다.
+     * 캐시 항목. 성공이면 JWT와 그 만료시각을, 실패면 종류만 담는다.
      *
-     * @param jwtExpiresAt 성공 항목의 JWT 만료 시각(부정 항목은 null)
+     * @param jwtExpiresAt 성공 항목의 JWT 만료 시각(실패 항목은 null)
      */
-    private record CacheEntry(String accessToken, Instant jwtExpiresAt, boolean negative, Duration ttl) {
+    private record CacheEntry(Kind kind, String accessToken, Instant jwtExpiresAt, Duration ttl) {
 
         static CacheEntry success(String accessToken, Instant jwtExpiresAt) {
-            return new CacheEntry(accessToken, jwtExpiresAt, false, POSITIVE_TTL);
+            return new CacheEntry(Kind.SUCCESS, accessToken, jwtExpiresAt, POSITIVE_TTL);
         }
 
         static CacheEntry invalid() {
-            return new CacheEntry(null, null, true, NEGATIVE_TTL);
+            return new CacheEntry(Kind.INVALID, null, null, INVALID_TTL);
         }
 
+        static CacheEntry unavailable() {
+            return new CacheEntry(Kind.UNAVAILABLE, null, null, UNAVAILABLE_TTL);
+        }
+
+        /** 실패 항목은 TTL이 곧 수명이다. 성공 항목만 JWT 만료 30초 가드를 추가로 본다. */
         boolean usable(Instant now) {
-            return negative || now.isBefore(jwtExpiresAt.minus(EXPIRY_GUARD));
+            return kind != Kind.SUCCESS || now.isBefore(jwtExpiresAt.minus(EXPIRY_GUARD));
         }
     }
 }
