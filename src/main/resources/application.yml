@@ -52,6 +52,18 @@ spring:
                     redis-rate-limiter.replenishRate: 10
                     redis-rate-limiter.burstCapacity: 20
                     key-resolver: "#{@ipKeyResolver}"
+            # auth-server — 초대 링크 착지(/invite/{token} → org 검증 → Keycloak 로그인). 브라우저가 여는
+            # 공개 경로라 /login과 같은 IP당 제한을 건다(2026-09-05 사용자 초대 설계 §4).
+            - id: auth-invite
+              uri: ${AUTH_SERVER_URI:lb://auth-server}
+              predicates:
+                - Path=/invite/**
+              filters:
+                - name: RequestRateLimiter
+                  args:
+                    redis-rate-limiter.replenishRate: 10
+                    redis-rate-limiter.burstCapacity: 20
+                    key-resolver: "#{@ipKeyResolver}"
             - id: auth-login
               uri: ${AUTH_SERVER_URI:lb://auth-server}
               predicates:
