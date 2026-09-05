@@ -44,6 +44,31 @@ class SecurityConfigTest {
     }
 
     /**
+     * permitAll은 인가만 건너뛴다 — oauth2ResourceServer가 같은 체인에 있으면
+     * BearerTokenAuthenticationFilter가 authorizeExchange보다 먼저 실행되어, PAT(agp_*, JWT 아님)를
+     * JWT로 디코드 시도하다 실패해 인가 단계에 닿기도 전에 401을 낸다(agent-service T7과 동일 함정,
+     * 실측: task-14 E2E). 그래서 /api/agent/mcp/**는 oauth2ResourceServer가 아예 없는 별도
+     * SecurityWebFilterChain(순서 1)으로 분리해야 한다.
+     */
+    @Test
+    void agentMcpPathWithPatBearerBypassesJwtDecode() {
+        client().post().uri("/api/agent/mcp/anything")
+                .header("Authorization", "Bearer agp_dummyPatValueThatIsNotAJwt")
+                .exchange()
+                .expectStatus().value(status -> assertThat(status).isNotEqualTo(401));
+    }
+
+    @Test
+    void agentMcpPathOptionsPreflightStillWorks() {
+        client().options().uri("/api/agent/mcp/anything")
+                .header("Origin", "http://localhost:5173")
+                .header("Access-Control-Request-Method", "POST")
+                .exchange()
+                .expectStatus().value(status -> assertThat(status).isNotEqualTo(401))
+                .expectHeader().valueEquals("Access-Control-Allow-Origin", "http://localhost:5173");
+    }
+
+    /**
      * /api/agent/mcp/** 이외의 agent 경로(tokens/personas 등)는 permitAll에 들어가지 않는다 —
      * anyExchange().authenticated()에 기대는 계약이라, 누가 permitAll을 넓히면 여기서 깨진다.
      */

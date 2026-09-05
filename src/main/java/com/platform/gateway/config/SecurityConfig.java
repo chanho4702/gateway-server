@@ -4,6 +4,7 @@ import com.platform.gateway.security.AudienceValidator;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.core.annotation.Order;
 import org.springframework.http.HttpMethod;
 import org.springframework.security.config.Customizer;
 import org.springframework.security.config.annotation.web.reactive.EnableWebFluxSecurity;
@@ -14,6 +15,7 @@ import org.springframework.security.oauth2.jwt.JwtValidators;
 import org.springframework.security.oauth2.jwt.NimbusReactiveJwtDecoder;
 import org.springframework.security.oauth2.jwt.ReactiveJwtDecoder;
 import org.springframework.security.web.server.SecurityWebFilterChain;
+import org.springframework.security.web.server.util.matcher.ServerWebExchangeMatchers;
 import org.springframework.web.cors.CorsConfiguration;
 import org.springframework.web.cors.reactive.CorsConfigurationSource;
 import org.springframework.web.cors.reactive.UrlBasedCorsConfigurationSource;
@@ -28,7 +30,35 @@ import java.util.List;
 @EnableWebFluxSecurity
 public class SecurityConfig {
 
+    private static final String MCP_PATH = "/api/agent/mcp";
+    private static final String MCP_SUBPATHS = "/api/agent/mcp/**";
+
+    /**
+     * {@code /api/agent/mcp/**} 전용 체인 — 완전히 분리한다. 같은 체인에 oauth2ResourceServer(jwt)를
+     * 두면, permitAll이 인가만 건너뛸 뿐이라 authorizeExchange보다 먼저 실행되는
+     * BearerTokenAuthenticationFilter가 PAT(agp_*, JWT 아님)를 JWT로 디코드 시도하다 실패해
+     * SecurityContext를 지우고 인가 단계에 닿기도 전에 401을 낸다(agent-service T7과 동일 함정,
+     * 실측: task-14 E2E 도그푸딩에서 게이트웨이 경유만 401·직접 접속은 정상이었다).
+     * 그래서 이 경로는 JWT 리소스서버 설정이 아예 없는 별도 체인으로 permitAll만 두고,
+     * PAT 인증은 agent-service 자체 수행(서비스 SecurityConfig와 동기).
+     * CORS는 아래 corsConfigurationSource 빈을 공유해 preflight(OPTIONS)도 정상 응답한다.
+     */
     @Bean
+    @Order(1)
+    SecurityWebFilterChain mcpSecurityWebFilterChain(ServerHttpSecurity http, CorsConfigurationSource corsSource) {
+        http
+                .securityMatcher(ServerWebExchangeMatchers.pathMatchers(MCP_PATH, MCP_SUBPATHS))
+                .csrf(ServerHttpSecurity.CsrfSpec::disable)
+                .httpBasic(ServerHttpSecurity.HttpBasicSpec::disable)
+                .formLogin(ServerHttpSecurity.FormLoginSpec::disable)
+                .cors(cors -> cors.configurationSource(corsSource))
+                .authorizeExchange(auth -> auth.anyExchange().permitAll());
+        return http.build();
+    }
+
+    /** 그 외 모든 경로 — 기존과 동일한 JWT 리소스서버 조기차단. */
+    @Bean
+    @Order(2)
     SecurityWebFilterChain securityWebFilterChain(ServerHttpSecurity http, CorsConfigurationSource corsSource) {
         http
                 .csrf(ServerHttpSecurity.CsrfSpec::disable)
@@ -46,8 +76,6 @@ public class SecurityConfig {
                         .pathMatchers("/api/wiki/collaboration", "/api/wiki/collaboration/**").permitAll()
                         //인증 관련 경로 + /fallback/** 허용 — fallback을 안 열어두면 서킷브레이커가 forward한 내부 요청이 401로 죽는 미묘한 버그가 생김
                         .pathMatchers(HttpMethod.GET, "/api/board/posts/**").permitAll() // 비 로그인 게시글 열람
-                        // PAT 인증은 agent-service 자체 수행(서비스 SecurityConfig와 동기)
-                        .pathMatchers("/api/agent/mcp/**").permitAll()
                         .anyExchange().authenticated())
                 .oauth2ResourceServer(oauth2 -> oauth2.jwt(Customizer.withDefaults()));
         return http.build();
