@@ -138,6 +138,12 @@ spring:
               uri: ${AGENT_SERVICE_URI:lb://agent-service}
               predicates:
                 - Path=/api/agent/**
+            # migration-service — 컨플루언스 DC·노션 이관 REST(위키 밖 별도 모듈). 컨트롤러가 /api/migration 접두사를 소유한다.
+            # 위키 내부 import API(/internal/wiki/import/**)는 라우팅하지 않는다 — 내부망 + X-Internal-Token 전용.
+            - id: migration
+              uri: ${MIGRATION_SERVICE_URI:lb://migration-service}
+              predicates:
+                - Path=/api/migration/**
             # search-service — 통합 검색 GraphQL + 재색인 관리 REST (Wave C).
             #
             # OpenSearch를 띄우지 않는 배포는 SEARCH_SERVICE_URI를 wiki-backend로 돌린다
