@@ -45,6 +45,8 @@ public class SecurityConfig {
                         .pathMatchers("/api/wiki/collaboration", "/api/wiki/collaboration/**").permitAll()
                         //인증 관련 경로 + /fallback/** 허용 — fallback을 안 열어두면 서킷브레이커가 forward한 내부 요청이 401로 죽는 미묘한 버그가 생김
                         .pathMatchers(HttpMethod.GET, "/api/board/posts/**").permitAll() // 비 로그인 게시글 열람
+                        // PAT 인증은 agent-service 자체 수행(서비스 SecurityConfig와 동기)
+                        .pathMatchers("/api/agent/mcp/**").permitAll()
                         .anyExchange().authenticated())
                 .oauth2ResourceServer(oauth2 -> oauth2.jwt(Customizer.withDefaults()));
         return http.build();

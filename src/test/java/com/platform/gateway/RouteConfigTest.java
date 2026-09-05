@@ -23,7 +23,7 @@ class RouteConfigTest {
                 .block();
         assertThat(ids).contains(
                 "board", "auth-oauth2", "auth-login", "auth-api", "auth-jwks", "auth-me",
-                "org", "wiki-collaboration-bootstrap", "wiki-collaboration", "wiki", "alm", "search");
+                "org", "wiki-collaboration-bootstrap", "wiki-collaboration", "wiki", "alm", "search", "agent");
     }
 
     @Test
@@ -64,7 +64,8 @@ class RouteConfigTest {
         for (Expect e : List.of(new Expect("org", "org-service"),
                 new Expect("wiki", "wiki-backend"),
                 new Expect("alm", "alm-backend"),
-                new Expect("search", "search-service"))) {
+                new Expect("search", "search-service"),
+                new Expect("agent", "agent-service"))) {
             var route = routes.stream().filter(r -> r.getId().equals(e.id())).findFirst().orElseThrow();
             assertThat(route.getUri()).as("route %s", e.id()).hasScheme("lb").hasHost(e.host());
         }
@@ -108,7 +109,7 @@ class RouteConfigTest {
                 .as("search 라우트의 StripPrefix parts=2")
                 .contains("StripPrefix parts = 2");
 
-        for (String id : List.of("org", "wiki", "alm")) {
+        for (String id : List.of("org", "wiki", "alm", "agent")) {
             var route = routes.stream().filter(r -> r.getId().equals(id)).findFirst().orElseThrow();
             assertThat(route.getFilters().toString())
                     .as("route %s는 접두사를 떼지 않는다", id)

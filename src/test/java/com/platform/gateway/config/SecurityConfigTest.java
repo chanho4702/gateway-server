@@ -32,6 +32,27 @@ class SecurityConfigTest {
         client().get().uri("/api/me").exchange().expectStatus().isUnauthorized();
     }
 
+    /**
+     * agent-service MCP 엔드포인트는 PAT(agp_*, JWT 아님)로 자체 인증한다 — 게이트웨이 JWT 필터가
+     * 여기를 막으면 정상 PAT 요청도 401로 조기 차단된다. 인증 실패 판정은 다운스트림(agent-service)
+     * SecurityConfig의 몫이라 여기서는 401이 아니면 통과.
+     */
+    @Test
+    void agentMcpPathPassesSecurityWithoutJwt() {
+        client().post().uri("/api/agent/mcp/anything").exchange()
+                .expectStatus().value(status -> assertThat(status).isNotEqualTo(401));
+    }
+
+    /**
+     * /api/agent/mcp/** 이외의 agent 경로(tokens/personas 등)는 permitAll에 들어가지 않는다 —
+     * anyExchange().authenticated()에 기대는 계약이라, 누가 permitAll을 넓히면 여기서 깨진다.
+     */
+    @Test
+    void agentNonMcpPathsWithoutTokenAre401() {
+        client().get().uri("/api/agent/tokens").exchange().expectStatus().isUnauthorized();
+        client().get().uri("/api/agent/personas").exchange().expectStatus().isUnauthorized();
+    }
+
     @Test
     void garbageBearerTokenIs401() {
         client().get().uri("/api/me")

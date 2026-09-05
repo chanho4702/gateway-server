@@ -116,6 +116,12 @@ spring:
               uri: ${ALM_SERVICE_URI:lb://alm-backend}
               predicates:
                 - Path=/api/alm/**
+            # agent-service — 에이전트 REST. 컨트롤러가 /api/agent 접두사를 소유한다(StripPrefix 없음).
+            # dev/기본: lb://(Eureka) · docker: AGENT_SERVICE_URI DNS 직결 — org/alm과 동일 분기.
+            - id: agent
+              uri: ${AGENT_SERVICE_URI:lb://agent-service}
+              predicates:
+                - Path=/api/agent/**
             # search-service — 통합 검색 GraphQL + 재색인 관리 REST (Wave C).
             #
             # OpenSearch를 띄우지 않는 배포는 SEARCH_SERVICE_URI를 wiki-backend로 돌린다
