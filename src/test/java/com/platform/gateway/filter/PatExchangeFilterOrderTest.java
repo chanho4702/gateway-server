@@ -38,6 +38,19 @@ class PatExchangeFilterOrderTest {
     }
 
     /**
+     * 스코프 필터는 교환 필터 <b>뒤</b>여야 한다 — 앞이면 아직 PAT 원문이라 읽을 JWT가 없고,
+     * 스코프 강제가 통째로 무력화된다(모든 PAT가 "JWT 아님"으로 통과).
+     */
+    @Test
+    void scopeFilterRunsAfterExchangeFilter() {
+        int exchangeIndex = indexOf(PatExchangeWebFilter.class);
+        int scopeIndex = indexOf(PatScopeWebFilter.class);
+
+        assertThat(scopeIndex).as("PatScopeWebFilter가 WebFilter 빈으로 등록돼야 한다").isNotNegative();
+        assertThat(exchangeIndex).as("PAT 교환 필터가 스코프 필터보다 먼저여야 한다").isLessThan(scopeIndex);
+    }
+
+    /**
      * 기본 프로필에는 AGENT_INTERNAL_SECRET이 없다 → PAT는 전부 401 invalid_token.
      * 필터가 보안 체인보다 뒤에 있었다면 Security가 먼저 잡아 본문 없는 401이 나온다 —
      * 본문의 {@code invalid_token}이 "우리 필터가 먼저 돌았다"는 증거다.

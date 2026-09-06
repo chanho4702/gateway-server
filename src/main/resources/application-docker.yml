@@ -12,3 +12,6 @@ platform:
   # 컨테이너 네트워크에서는 서비스명이 DNS 호스트명. compose가 AUTH_SERVER_BASE_URI를 주입하지 않아도
   # 이 기본값으로 동작한다. AGENT_INTERNAL_SECRET은 auth-server와 같은 값을 compose가 주입해야 한다.
   auth-server-base-uri: ${AUTH_SERVER_BASE_URI:http://auth-server:9000}
+  # 관리자 판정용 org-service 직접 호출. 라우트의 ORG_SERVICE_URI와 같은 주소지만 별도 키다 —
+  # 라우트 쪽은 lb://org-service로 둘 수 있고 WebClient는 그것을 해석하지 못한다.
+  org-service-base-uri: ${ORG_SERVICE_BASE_URI:http://org-service:9130}

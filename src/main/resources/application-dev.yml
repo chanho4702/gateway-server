@@ -16,3 +16,24 @@ platform:
   jwks-uri: http://localhost:19000/.well-known/jwks.json
   # dev 오프셋 auth-server(:19000). AGENT_INTERNAL_SECRET은 dev에서도 env로만 준다(기본 미설정 = PAT 거부).
   auth-server-base-uri: ${AUTH_SERVER_BASE_URI:http://localhost:19000}
+  org-service-base-uri: ${ORG_SERVICE_BASE_URI:http://localhost:19130}
+  health:
+    # dev 오프셋 클러스터는 호스트에서 도는다 — 도커 DNS 이름(auth-server 등)이 해석되지 않으므로
+    # localhost + 운영포트+10000으로 갈아끼운다. 인프라(keycloak 관리포트·minio API·opensearch·loki)는
+    # 호스트에 발행돼 있지 않아 비운다 = 표에서 그 행이 사라진다. grafana만 :3000으로 열려 있다.
+    targets:
+      auth-server: http://localhost:19000/actuator/health
+      org-service: http://localhost:19130/actuator/health
+      wiki-backend: http://localhost:19110/actuator/health
+      alm-backend: http://localhost:19120/actuator/health
+      agent-service: http://localhost:19160/actuator/health
+      migration-service: http://localhost:19170/actuator/health
+      board-service: http://localhost:19100/actuator/health
+      docs-backend: http://localhost:19910/actuator/health
+      collaboration-service: http://localhost:19150/health
+      eureka: http://localhost:18761/actuator/health
+      keycloak: ""
+      minio: ""
+      opensearch: ""
+      loki: ""
+      grafana: http://localhost:3000/api/health

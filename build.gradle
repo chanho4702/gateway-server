@@ -31,9 +31,15 @@ dependencies {
     implementation 'org.springframework.boot:spring-boot-starter-oauth2-resource-server'
     // PAT 교환 캐시 — 인스턴스 로컬(Redis 금지: 인증 캐시가 fail-open이면 취약점)
     implementation 'com.github.ben-manes.caffeine:caffeine'
+    // 자기 자신의 health/info — 헬스 집계가 다른 서비스에 요구하는 것과 같은 계약을 게이트웨이도 만족한다.
+    // 노출은 health,info뿐이고 둘 다 내부 네트워크 전용이다(nginx는 /api|oauth2|login|invite|.well-known만 넘긴다).
+    implementation 'org.springframework.boot:spring-boot-starter-actuator'
     testImplementation 'org.springframework.boot:spring-boot-starter-test'
     testImplementation 'org.springframework.boot:spring-boot-starter-webflux' // WebTestClient
     testImplementation 'com.squareup.okhttp3:mockwebserver' // PAT 교환용 auth-server 스텁
 }
 tasks.named('test') { useJUnitPlatform() }
 tasks.named('bootJar') { archiveFileName = 'app.jar' }
+
+// /actuator/info의 build.version — 헬스 집계 표의 "버전" 열이 이 값을 읽는다.
+springBoot { buildInfo() }

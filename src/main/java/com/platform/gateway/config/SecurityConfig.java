@@ -71,6 +71,11 @@ public class SecurityConfig {
                         // /invite/**: 초대 링크 착지 — 아직 계정이 없는 사람이 여는 경로라 JWT가 있을 수 없다
                         .pathMatchers("/oauth2/**", "/login/**", "/invite/**", "/api/auth/**",
                                 "/.well-known/**", "/fallback/**").permitAll()
+                        // 자기 자신의 상태·버전. 내부 네트워크 전용이다 — 컨테이너 호스트 포트를 발행하지 않고
+                        // nginx도 /actuator/**를 넘기지 않는다. 다른 서비스와 같은 두 경로만 연다.
+                        .pathMatchers("/actuator/health", "/actuator/health/**", "/actuator/info").permitAll()
+                        // /api/platform/** — 관리자 대시보드 API. 여기서는 로그인만 요구하고(anyExchange),
+                        // 전역 관리자 판정은 PlatformController의 AdminGate가 org-service에 물어 한다.
                         // WebSocket은 브라우저가 Authorization header를 안정적으로 넣을 수 없다.
                         // 이 정확한 경로만 열고 collaboration-service의 Redis GETDEL ticket이 최종 인증한다.
                         .pathMatchers("/api/wiki/collaboration", "/api/wiki/collaboration/**").permitAll()
