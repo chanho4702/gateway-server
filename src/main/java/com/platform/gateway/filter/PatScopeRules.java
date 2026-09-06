@@ -52,7 +52,8 @@ public final class PatScopeRules {
             // 여기서 막으면 공개 흐름만 깨진다.
             return NONE;
         }
-        if (matches(p, "/api/me")) {
+        // 정확히 이 경로 하나. 라우트도 Path=/api/me 단건이므로 하위 경로를 열어줄 이유가 없다.
+        if (p.equals("/api/me")) {
             return NONE;
         }
         if (matches(p, "/api/platform")) {

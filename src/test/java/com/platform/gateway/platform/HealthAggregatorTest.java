@@ -14,6 +14,7 @@ import java.time.Duration;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -21,7 +22,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * 헬스 집계. 프로브 대상은 MockWebServer 한 대에 경로로 나눠 붙인다 — 어떤 응답이 어떤 상태로
- * 옮겨지는지, 그리고 <b>캐시 한 주기에 프로브가 한 번만 나가는지</b>가 이 스위트의 관심사다.
+ * 옮겨지는지, <b>시간 예산 두 겹</b>(컴포넌트 3초·집계 5초)이 지켜지는지, 그리고 캐시 한 주기에
+ * 프로브가 한 번만 나가는지가 이 스위트의 관심사다.
  */
 class HealthAggregatorTest {
 
@@ -35,10 +37,7 @@ class HealthAggregatorTest {
         server.setDispatcher(new Dispatcher() {
             @Override
             public MockResponse dispatch(RecordedRequest request) {
-                String path = request.getPath();
-                hits.computeIfAbsent(path, key -> new AtomicInteger()).incrementAndGet();
-                MockResponse response = routes.get(path);
-                return response == null ? new MockResponse().setResponseCode(404) : response;
+                return record(request.getPath());
             }
         });
         server.start();
@@ -50,6 +49,12 @@ class HealthAggregatorTest {
     }
 
     // --- 도우미 ---------------------------------------------------------------
+
+    private MockResponse record(String path) {
+        hits.computeIfAbsent(path, key -> new AtomicInteger()).incrementAndGet();
+        MockResponse response = routes.get(path);
+        return response == null ? new MockResponse().setResponseCode(404) : response;
+    }
 
     private void route(String path, MockResponse response) {
         routes.put(path, response);
@@ -78,12 +83,13 @@ class HealthAggregatorTest {
     }
 
     private HealthAggregator aggregator(Map<String, String> targets) {
-        return aggregator(targets, Duration.ofSeconds(5));
+        return aggregator(targets, Duration.ofSeconds(5), Duration.ofSeconds(20), Duration.ofSeconds(20));
     }
 
-    private HealthAggregator aggregator(Map<String, String> targets, Duration probeTimeout) {
-        return new HealthAggregator(WebClient.builder(), targets, probeTimeout,
-                Duration.ofSeconds(20), "9.9.9");
+    private HealthAggregator aggregator(Map<String, String> targets, Duration probeTimeout,
+                                        Duration aggregateTimeout, Duration cacheTtl) {
+        return new HealthAggregator(WebClient.builder(), targets, probeTimeout, aggregateTimeout,
+                cacheTtl, "9.9.9");
     }
 
     private static ComponentHealth component(HealthReport report, String id) {
@@ -119,15 +125,15 @@ class HealthAggregatorTest {
         assertThat(alm.detail()).contains("DOWN").contains("db");
     }
 
-    /** 상태가 DOWN이면 버전은 묻지 않는다 — 죽은 서비스에 프로브를 하나 더 보내지 않는다. */
+    /** 버전은 UP인 컴포넌트에만 붙인다 — DOWN 행에 버전이 있으면 "떠 있는데 아픈 것"과 헷갈린다. */
     @Test
-    void DOWN이면_info를_부르지_않는다() {
+    void DOWN이면_버전을_싣지_않는다() {
         route("/alm/actuator/health", actuator("DOWN", "DOWN", "DOWN"));
         route("/alm/actuator/info", json(200, "{\"build\":{\"version\":\"1.0.0\"}}"));
 
-        aggregator(Map.of("alm-backend", url("/alm/actuator/health"))).report().block();
+        HealthReport report = aggregator(Map.of("alm-backend", url("/alm/actuator/health"))).report().block();
 
-        assertThat(hits("/alm/actuator/info")).isZero();
+        assertThat(component(report, "alm-backend").version()).isNull();
     }
 
     @Test
@@ -135,7 +141,7 @@ class HealthAggregatorTest {
         route("/agent/actuator/health", actuator("UP", "UP", "UP").setBodyDelay(3, TimeUnit.SECONDS));
 
         HealthReport report = aggregator(Map.of("agent-service", url("/agent/actuator/health")),
-                Duration.ofSeconds(1)).report().block();
+                Duration.ofSeconds(1), Duration.ofSeconds(20), Duration.ofSeconds(20)).report().block();
 
         ComponentHealth agent = component(report, "agent-service");
         assertThat(agent.status()).isEqualTo("DOWN");
@@ -181,6 +187,8 @@ class HealthAggregatorTest {
         assertThat(red.detail()).isEqualTo("cluster red");
     }
 
+    // --- actuator 없는 대상(eureka·search-service) --------------------------------
+
     /** eureka에는 actuator가 없다 — 404면 루트 200으로 살아 있음을 확인한다. */
     @Test
     void actuator가_없는_서비스는_루트_200으로_판정한다() {
@@ -191,6 +199,89 @@ class HealthAggregatorTest {
         ComponentHealth eureka = component(report, "eureka");
         assertThat(eureka.status()).isEqualTo("UP");
         assertThat(eureka.detail()).isEqualTo("actuator 없음");
+    }
+
+    @Test
+    void 검색_서비스도_같은_방식으로_표에_들어간다() {
+        route("/", new MockResponse().setResponseCode(200).setBody("search"));
+
+        HealthReport report = aggregator(Map.of("search-service", url("/actuator/health"))).report().block();
+
+        ComponentHealth search = component(report, "search-service");
+        assertThat(search.name()).isEqualTo("검색 서비스");
+        assertThat(search.group()).isEqualTo("service");
+        assertThat(search.status()).isEqualTo("UP");
+    }
+
+    /**
+     * 404를 한 번 확인한 대상에는 다음 주기부터 {@code /actuator/info}를 던지지 않는다 —
+     * 20초마다 확정된 404를 낭비할 이유가 없다.
+     */
+    @Test
+    void actuator가_없다고_확인되면_다음_주기부터_info를_부르지_않는다() throws Exception {
+        route("/", new MockResponse().setResponseCode(200).setBody("search"));
+        // 캐시 TTL을 최소로 두고 그보다 넉넉히 기다려 두 번째 수집을 실제로 일으킨다.
+        HealthAggregator aggregator = aggregator(Map.of("search-service", url("/actuator/health")),
+                Duration.ofSeconds(5), Duration.ofSeconds(20), Duration.ofMillis(1));
+
+        assertThat(component(aggregator.report().block(), "search-service").status()).isEqualTo("UP");
+        TimeUnit.MILLISECONDS.sleep(100);
+        assertThat(component(aggregator.report().block(), "search-service").status()).isEqualTo("UP");
+
+        assertThat(hits("/actuator/health")).as("health는 매 주기").isEqualTo(2);
+        assertThat(hits("/")).as("루트 폴백도 매 주기").isEqualTo(2);
+        assertThat(hits("/actuator/info")).as("info는 첫 주기 한 번뿐").isEqualTo(1);
+    }
+
+    // --- 시간 예산 -------------------------------------------------------------
+
+    /**
+     * health와 info는 병렬이어야 한다. 순차라면 컴포넌트 하나가 프로브 상한의 두 배를 쓴다.
+     * 시계 대신 래치로 못박는다 — health 응답을 info 요청이 도착할 때까지 붙잡아 두고,
+     * 그래도 둘 다 성공하면 두 요청이 동시에 떠 있었다는 뜻이다(순차였다면 여기서 굶는다).
+     */
+    @Test
+    void health와_info를_병렬로_받는다() throws Exception {
+        CountDownLatch infoArrived = new CountDownLatch(1);
+        route("/wiki/actuator/health", actuator("UP", "UP", "UP"));
+        route("/wiki/actuator/info", json(200, "{\"build\":{\"version\":\"2.0.0\"}}"));
+        server.setDispatcher(new Dispatcher() {
+            @Override
+            public MockResponse dispatch(RecordedRequest request) throws InterruptedException {
+                String path = request.getPath();
+                if (path.endsWith("/actuator/info")) {
+                    infoArrived.countDown();
+                } else if (path.endsWith("/actuator/health")) {
+                    infoArrived.await(3, TimeUnit.SECONDS); // 병렬이면 곧 풀린다
+                }
+                return record(path);
+            }
+        });
+
+        HealthReport report = aggregator(Map.of("wiki-backend", url("/wiki/actuator/health")),
+                Duration.ofSeconds(10), Duration.ofSeconds(20), Duration.ofSeconds(20)).report().block();
+
+        assertThat(infoArrived.getCount()).as("info 요청이 health 응답 전에 도착해야 한다").isZero();
+        ComponentHealth wiki = component(report, "wiki-backend");
+        assertThat(wiki.status()).isEqualTo("UP");
+        assertThat(wiki.version()).isEqualTo("2.0.0");
+    }
+
+    /** 느린 컴포넌트 하나가 표 전체를 붙잡지 않는다 — 못 받은 행만 UNKNOWN이 된다. */
+    @Test
+    void 집계_상한을_넘기면_받은_것만으로_표를_만든다() {
+        route("/wiki/actuator/health", actuator("UP", "UP", "UP"));
+        route("/alm/actuator/health", actuator("UP", "UP", "UP").setBodyDelay(4, TimeUnit.SECONDS));
+
+        HealthReport report = aggregator(new LinkedHashMap<>(Map.of(
+                        "wiki-backend", url("/wiki/actuator/health"),
+                        "alm-backend", url("/alm/actuator/health"))),
+                Duration.ofSeconds(10), Duration.ofSeconds(1), Duration.ofSeconds(20)).report().block();
+
+        assertThat(component(report, "wiki-backend").status()).isEqualTo("UP");
+        ComponentHealth alm = component(report, "alm-backend");
+        assertThat(alm.status()).isEqualTo("UNKNOWN");
+        assertThat(alm.detail()).isEqualTo("집계 시간 초과");
     }
 
     // --- 파생 행 --------------------------------------------------------------

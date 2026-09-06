@@ -105,8 +105,9 @@ class PatScopeWebFilterTest {
     }
 
     @Test
-    void 내_프로필은_어떤_스코프로도_허용된다() {
+    void 내_프로필은_어떤_스코프로도_허용되지만_하위_경로는_아니다() {
         allowed("GET", "/api/me", pat("wiki:read"));
+        denied("DELETE", "/api/me/tokens", pat("wiki:write", "admin"));
     }
 
     // --- 손대지 않는 것 ---------------------------------------------------------

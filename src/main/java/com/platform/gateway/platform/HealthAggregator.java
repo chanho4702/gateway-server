@@ -20,6 +20,10 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.TimeoutException;
 import java.util.function.Function;
 
@@ -28,7 +32,13 @@ import java.util.function.Function;
  *
  * <p><b>부하 원칙</b>(설계 §0)이 이 클래스의 형태를 정한다 — 결과를 {@code cacheTtl}(기본 20초) 동안
  * 캐시하고, 그 사이 들어온 동시 요청은 진행 중인 프로브 하나를 공유한다({@code Mono.cache}). 화면을
- * 몇 명이 보든 각 서비스가 받는 프로브는 20초당 1회다. 프로브는 전부 병렬, 각 3초 타임아웃.
+ * 몇 명이 보든 각 서비스가 받는 프로브는 20초당 1회다.
+ *
+ * <p><b>시간 예산</b>은 두 겹이다. 컴포넌트 하나는 {@code probeTimeout}(3초)을 넘지 않는다 —
+ * {@code /actuator/health}와 {@code /actuator/info}를 <i>순차가 아니라 병렬</i>로 받는 이유가 이것이다
+ * (순차면 느린 서비스 하나가 6초를 쓴다). 그 위에 집계 전체 상한 {@code aggregateTimeout}(5초)이 있고,
+ * 넘기면 그때까지 답한 것만으로 표를 만들고 못 받은 행은 UNKNOWN으로 둔다 — 대시보드가 통째로
+ * 멈추는 것보다 낫다.
  *
  * <p>postgres·redis 행에는 프로브가 없다. Spring 서비스들이 이미 자기 health에
  * {@code components.db}·{@code components.redis}를 싣고 있으므로 그것을 모아 파생한다 — DB에 직접
@@ -52,22 +62,31 @@ public class HealthAggregator {
     private final WebClient webClient;
     private final Map<String, String> targets;
     private final Duration probeTimeout;
+    private final Duration aggregateTimeout;
     private final Duration cacheTtl;
     private final String selfVersion;
     private final Mono<HealthReport> cached;
 
+    /**
+     * Actuator가 없다고 확인된 대상(eureka·search-service). 다음 주기부터는 {@code /actuator/info}를
+     * 아예 부르지 않는다 — 어차피 404이고, 20초마다 낭비할 이유가 없다. 상태가 404를 벗어나면 지운다.
+     */
+    private final Set<String> actuatorAbsent = ConcurrentHashMap.newKeySet();
+
     @Autowired
     public HealthAggregator(PlatformHealthProperties properties, ObjectProvider<BuildProperties> buildProperties) {
-        this(WebClient.builder(), properties.getTargets(), properties.getProbeTimeout(), properties.getCacheTtl(),
+        this(WebClient.builder(), properties.getTargets(), properties.getProbeTimeout(),
+                properties.getAggregateTimeout(), properties.getCacheTtl(),
                 versionOf(buildProperties.getIfAvailable()));
     }
 
     /** 테스트용 — MockWebServer 주소 맵과 짧은 타임아웃·TTL을 직접 준다. */
     HealthAggregator(WebClient.Builder builder, Map<String, String> targets, Duration probeTimeout,
-                     Duration cacheTtl, String selfVersion) {
+                     Duration aggregateTimeout, Duration cacheTtl, String selfVersion) {
         this.webClient = builder.build();
         this.targets = Map.copyOf(targets);
         this.probeTimeout = probeTimeout;
+        this.aggregateTimeout = aggregateTimeout;
         this.cacheTtl = cacheTtl;
         this.selfVersion = selfVersion;
         // 값은 TTL만큼, 실패는 짧게 캐시한다. 진행 중인 수집은 후발 구독자가 공유한다(중복 프로브 방지).
@@ -89,10 +108,14 @@ public class HealthAggregator {
     private Mono<HealthReport> collect() {
         Instant checkedAt = Instant.now();
         List<Spec> probed = HealthCatalog.SPECS.stream().filter(this::isProbed).toList();
+        // 상한을 넘겨도 그때까지 답한 것은 살린다 — Flux 전체를 버리면 표가 통째로 빈다.
+        List<ProbeResult> collected = new CopyOnWriteArrayList<>();
         return Flux.fromIterable(probed)
-                .flatMap(spec -> probe(spec, targets.get(spec.id())))
-                .collectList()
-                .map(results -> assemble(checkedAt, results));
+                .flatMap(spec -> probe(spec, targets.get(spec.id())).doOnNext(collected::add))
+                .then()
+                .timeout(aggregateTimeout)
+                .onErrorResume(TimeoutException.class, e -> Mono.empty())
+                .then(Mono.fromSupplier(() -> assemble(checkedAt, collected)));
     }
 
     /** 주소가 설정된 것만 프로브한다 — 값을 비우면 그 행 자체가 사라진다(OpenSearch 없는 배포 등). */
@@ -122,6 +145,11 @@ public class HealthAggregator {
                     if (result != null) {
                         components.add(new ComponentHealth(spec.id(), spec.name(), spec.group(),
                                 result.status(), result.latencyMs(), result.version(), result.detail()));
+                    } else if (isProbed(spec)) {
+                        // 설정은 됐는데 집계 상한 안에 답이 오지 않았다. 행을 지우면 "설정 안 됨"과
+                        // 구분이 안 되므로 모른다고 말한다.
+                        components.add(new ComponentHealth(spec.id(), spec.name(), spec.group(),
+                                UNKNOWN, null, null, "집계 시간 초과"));
                     }
                 }
             }
@@ -158,28 +186,51 @@ public class HealthAggregator {
         };
     }
 
+    /**
+     * health와 info를 <b>동시에</b> 던진다. 둘 다 {@code probeTimeout} 안이므로 컴포넌트 총 소요도
+     * 그 안이다. info는 상태 판정에 관여하지 않는다 — 실패하면 버전 열만 빈다.
+     */
     private Mono<ProbeResult> actuator(Spec spec, String url, boolean rootFallback) {
-        return Mono.defer(() -> {
-            long start = System.nanoTime();
-            return get(url)
-                    .flatMap(response -> {
-                        if (rootFallback && response.status() == 404) {
-                            return root(spec, url, start); // Actuator 없는 Spring 앱(eureka)
-                        }
-                        return Mono.just(fromActuator(spec, response, elapsedMs(start)));
-                    })
-                    .flatMap(this::withVersion);
+        return Mono.defer(() -> Mono.zip(get(url), version(spec, url))
+                .flatMap(both -> {
+                    HttpProbe response = both.getT1();
+                    if (rootFallback && response.status() == 404) {
+                        // Actuator가 없는 앱이다. 병렬로 던진 info 응답(역시 404)은 버리고, 다음
+                        // 주기부터는 아예 부르지 않는다.
+                        actuatorAbsent.add(spec.id());
+                        return root(spec, url, response.latencyMs());
+                    }
+                    actuatorAbsent.remove(spec.id());
+                    ProbeResult result = fromActuator(spec, response);
+                    String version = both.getT2().orElse(null);
+                    return Mono.just(UP.equals(result.status()) && version != null
+                            ? result.withVersion(version) : result);
+                }));
+    }
+
+    /** {@code /actuator/info}의 {@code build.version}. Actuator가 없다고 확인된 대상은 건너뛴다. */
+    private Mono<Optional<String>> version(Spec spec, String healthUrl) {
+        String infoUrl = infoOf(healthUrl);
+        if (infoUrl == null || actuatorAbsent.contains(spec.id())) {
+            return Mono.just(Optional.empty());
+        }
+        return get(infoUrl).map(response -> {
+            if (response.error() != null || !isOk(response.status())) {
+                return Optional.<String>empty();
+            }
+            String version = string(map(response.body(), "build"), "version");
+            return version == null || version.isBlank() ? Optional.<String>empty() : Optional.of(version);
         });
     }
 
     /** Actuator가 없으면 서비스 루트가 200인지만 본다 — 살아 있다는 사실 이상은 알 수 없다. */
-    private Mono<ProbeResult> root(Spec spec, String healthUrl, long start) {
+    private Mono<ProbeResult> root(Spec spec, String healthUrl, long spentMs) {
         String rootUrl = rootOf(healthUrl);
         if (rootUrl == null) {
-            return Mono.just(ProbeResult.down(spec, elapsedMs(start), "HTTP 404"));
+            return Mono.just(ProbeResult.down(spec, spentMs, "HTTP 404"));
         }
         return get(rootUrl).map(response -> {
-            long latency = elapsedMs(start);
+            long latency = spentMs + response.latencyMs();
             if (response.error() != null) {
                 return ProbeResult.down(spec, latency, response.error());
             }
@@ -190,43 +241,37 @@ public class HealthAggregator {
     }
 
     private Mono<ProbeResult> plain(Spec spec, String url) {
-        return Mono.defer(() -> {
-            long start = System.nanoTime();
-            return get(url).map(response -> {
-                long latency = elapsedMs(start);
-                if (response.error() != null) {
-                    return ProbeResult.down(spec, latency, response.error());
-                }
-                return isOk(response.status())
-                        ? new ProbeResult(spec.id(), UP, latency, null, null, null, null)
-                        : ProbeResult.down(spec, latency, "HTTP " + response.status());
-            });
+        return get(url).map(response -> {
+            if (response.error() != null) {
+                return ProbeResult.down(spec, response.latencyMs(), response.error());
+            }
+            return isOk(response.status())
+                    ? new ProbeResult(spec.id(), UP, response.latencyMs(), null, null, null, null)
+                    : ProbeResult.down(spec, response.latencyMs(), "HTTP " + response.status());
         });
     }
 
     private Mono<ProbeResult> openSearch(Spec spec, String url) {
-        return Mono.defer(() -> {
-            long start = System.nanoTime();
-            return get(url).map(response -> {
-                long latency = elapsedMs(start);
-                if (response.error() != null) {
-                    return ProbeResult.down(spec, latency, response.error());
-                }
-                if (!isOk(response.status())) {
-                    return ProbeResult.down(spec, latency, "HTTP " + response.status());
-                }
-                String clusterStatus = string(response.body(), "status");
-                if (clusterStatus == null) {
-                    return new ProbeResult(spec.id(), UP, latency, null, null, null, null);
-                }
-                // green·yellow는 서비스 가능. red만 색인 일부를 못 읽는 상태라 DEGRADED로 올린다.
-                String status = "red".equalsIgnoreCase(clusterStatus) ? DEGRADED : UP;
-                return new ProbeResult(spec.id(), status, latency, null, "cluster " + clusterStatus, null, null);
-            });
+        return get(url).map(response -> {
+            long latency = response.latencyMs();
+            if (response.error() != null) {
+                return ProbeResult.down(spec, latency, response.error());
+            }
+            if (!isOk(response.status())) {
+                return ProbeResult.down(spec, latency, "HTTP " + response.status());
+            }
+            String clusterStatus = string(response.body(), "status");
+            if (clusterStatus == null) {
+                return new ProbeResult(spec.id(), UP, latency, null, null, null, null);
+            }
+            // green·yellow는 서비스 가능. red만 색인 일부를 못 읽는 상태라 DEGRADED로 올린다.
+            String status = "red".equalsIgnoreCase(clusterStatus) ? DEGRADED : UP;
+            return new ProbeResult(spec.id(), status, latency, null, "cluster " + clusterStatus, null, null);
         });
     }
 
-    private ProbeResult fromActuator(Spec spec, HttpProbe response, long latency) {
+    private ProbeResult fromActuator(Spec spec, HttpProbe response) {
+        long latency = response.latencyMs();
         if (response.error() != null) {
             return ProbeResult.down(spec, latency, response.error());
         }
@@ -247,26 +292,6 @@ public class HealthAggregator {
         return new ProbeResult(spec.id(), DOWN, latency, null, reported + downComponents(body), db, redis);
     }
 
-    /** 상태를 확인한 서비스만 버전을 묻는다. 실패해도 상태에는 영향이 없다(설계 §2.2). */
-    private Mono<ProbeResult> withVersion(ProbeResult result) {
-        if (!UP.equals(result.status())) {
-            return Mono.just(result);
-        }
-        String infoUrl = infoOf(targets.get(result.id()));
-        if (infoUrl == null) {
-            return Mono.just(result);
-        }
-        return get(infoUrl)
-                .map(response -> {
-                    if (response.error() != null || !isOk(response.status())) {
-                        return result;
-                    }
-                    String version = string(map(response.body(), "build"), "version");
-                    return version == null || version.isBlank() ? result : result.withVersion(version);
-                })
-                .defaultIfEmpty(result);
-    }
-
     // --- HTTP --------------------------------------------------------------
 
     /**
@@ -274,16 +299,20 @@ public class HealthAggregator {
      * JSON이 아닌 본문(text/plain {@code ready}, HTML 오류 페이지)은 빈 맵이 된다 — 상태 코드는 남는다.
      */
     private Mono<HttpProbe> get(String url) {
-        return webClient.get().uri(url)
-                .exchangeToMono(response -> {
-                    int status = response.statusCode().value();
-                    return response.bodyToMono(JSON_MAP)
-                            .onErrorResume(e -> Mono.empty())
-                            .defaultIfEmpty(Map.of())
-                            .map(body -> new HttpProbe(status, body, null));
-                })
-                .timeout(probeTimeout)
-                .onErrorResume(e -> Mono.just(new HttpProbe(0, Map.of(), reason(e))));
+        return Mono.defer(() -> {
+            long start = System.nanoTime();
+            return webClient.get().uri(url)
+                    .exchangeToMono(response -> {
+                        int status = response.statusCode().value();
+                        return response.bodyToMono(JSON_MAP)
+                                .onErrorResume(e -> Mono.empty())
+                                .defaultIfEmpty(Map.of())
+                                .map(body -> new HttpProbe(status, body, null, elapsedMs(start)));
+                    })
+                    .timeout(probeTimeout)
+                    .onErrorResume(e -> Mono.just(
+                            new HttpProbe(0, Map.of(), reason(e), elapsedMs(start))));
+        });
     }
 
     private String reason(Throwable e) {
@@ -370,7 +399,7 @@ public class HealthAggregator {
     // --- 내부 값 -------------------------------------------------------------
 
     /** 한 번의 HTTP 시도 결과. {@code error != null}이면 응답 자체가 없었다는 뜻이다. */
-    private record HttpProbe(int status, Map<String, Object> body, String error) {}
+    private record HttpProbe(int status, Map<String, Object> body, String error, long latencyMs) {}
 
     /**
      * 컴포넌트 하나의 프로브 결과.

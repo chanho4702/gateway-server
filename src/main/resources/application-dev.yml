@@ -31,6 +31,7 @@ platform:
       board-service: http://localhost:19100/actuator/health
       docs-backend: http://localhost:19910/actuator/health
       collaboration-service: http://localhost:19150/health
+      search-service: http://localhost:19140/actuator/health
       eureka: http://localhost:18761/actuator/health
       keycloak: ""
       minio: ""

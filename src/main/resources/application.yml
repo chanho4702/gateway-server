@@ -8,6 +8,12 @@ spring:
       host: ${REDIS_HOST:localhost}
       port: ${REDIS_PORT:6379}
   cloud:
+    discovery:
+      client:
+        # 게이트웨이 자신의 health는 자기 상태만 본다 — 유레카 상태는 대시보드가 eureka 컴포넌트로
+        # 따로 프로브한다(설계 §3). 켜 두면 유레카가 잠깐 흔들릴 때 게이트웨이가 통째로 DOWN으로 보인다.
+        health-indicator:
+          enabled: false
     gateway:
       server:
         webflux:
@@ -206,6 +212,9 @@ management:
   info:
     build:
       enabled: true
+  health:
+    eureka:
+      enabled: false   # 유레카는 대시보드가 eureka 컴포넌트로 따로 본다(board-service와 동일 규칙)
 
 platform:
   # auth-server 발급 자체 AT의 검증 계약 — auth/board와 동일 env 이름.
@@ -221,29 +230,35 @@ platform:
   # 라우트용 ORG_SERVICE_URI(lb:// 가능)와 달리 여기는 항상 http 주소여야 한다(WebClient 직접 호출).
   org-service-base-uri: ${ORG_SERVICE_BASE_URI:http://localhost:9130}
   health:
-    # 프로브 하나의 상한 / 집계 결과 캐시. 화면을 몇 명이 보든 각 서비스가 받는 프로브는 cache-ttl당 1회다.
+    # 프로브 하나의 상한(health·info를 병렬로 받으므로 컴포넌트 총 소요도 이 값 안) / 집계 전체 상한 /
+    # 결과 캐시. 화면을 몇 명이 보든 각 서비스가 받는 프로브는 cache-ttl당 1회다.
     probe-timeout: 3s
+    aggregate-timeout: 5s
     cache-ttl: 20s
-    # 컴포넌트 id → 프로브 URL. 기본값은 도커 네트워크 이름이고, 항목마다 env로 덮어쓸 수 있다.
+    # 컴포넌트 id → 프로브 URL. 여기 기본값은 다른 base 기본값과 마찬가지로 **호스트에서 직접
+    # 띄웠을 때**의 localhost 주소다. 도커 네트워크 이름은 application-docker.yml에 있다.
     # **값을 비우면 그 컴포넌트는 표에서 사라진다** — OpenSearch를 내린 배포에서 항상 DOWN인 행이
-    # 뜨지 않게 하는 스위치다(HEALTH_URL_OPENSEARCH= 로 비우면 됨).
+    # 뜨지 않게 하는 스위치다(HEALTH_URL_OPENSEARCH= 로 비우면 됨). 호스트에 발행돼 있지 않은
+    # 인프라(keycloak 관리포트·minio API·opensearch·loki)는 기본이 빈 값이다.
     # gateway-server(자기 자신)·postgres·redis는 주소가 없다: 앞은 자명하고, 뒤 둘은 Spring 서비스
     # health의 components.db·components.redis를 모아 파생한다.
     targets:
-      auth-server: ${HEALTH_URL_AUTH_SERVER:http://auth-server:9000/actuator/health}
-      org-service: ${HEALTH_URL_ORG_SERVICE:http://org-service:9130/actuator/health}
-      wiki-backend: ${HEALTH_URL_WIKI_BACKEND:http://wiki-backend:9110/actuator/health}
-      alm-backend: ${HEALTH_URL_ALM_BACKEND:http://alm-backend:9120/actuator/health}
-      agent-service: ${HEALTH_URL_AGENT_SERVICE:http://agent-service:9160/actuator/health}
-      migration-service: ${HEALTH_URL_MIGRATION_SERVICE:http://migration-service:9170/actuator/health}
-      board-service: ${HEALTH_URL_BOARD_SERVICE:http://board-service:9100/actuator/health}
-      docs-backend: ${HEALTH_URL_DOCS_BACKEND:http://docs-backend:9110/actuator/health}
-      collaboration-service: ${HEALTH_URL_COLLABORATION_SERVICE:http://collaboration-service:9150/health}
-      # eureka에는 actuator가 없다 — 404면 루트 200으로 판정한다(HealthCatalog.Probe.ACTUATOR_OR_ROOT).
-      eureka: ${HEALTH_URL_EUREKA:http://eureka:8761/actuator/health}
-      # KC 26 관리 포트. KC_HEALTH_ENABLED=true는 compose에 이미 켜져 있다.
-      keycloak: ${HEALTH_URL_KEYCLOAK:http://keycloak:9000/health/ready}
-      minio: ${HEALTH_URL_MINIO:http://minio:9000/minio/health/live}
-      opensearch: ${HEALTH_URL_OPENSEARCH:http://opensearch:9200/_cluster/health}
-      loki: ${HEALTH_URL_LOKI:http://loki:3100/ready}
-      grafana: ${HEALTH_URL_GRAFANA:http://grafana:3000/api/health}
+      auth-server: ${HEALTH_URL_AUTH_SERVER:http://localhost:9000/actuator/health}
+      org-service: ${HEALTH_URL_ORG_SERVICE:http://localhost:9130/actuator/health}
+      wiki-backend: ${HEALTH_URL_WIKI_BACKEND:http://localhost:9110/actuator/health}
+      alm-backend: ${HEALTH_URL_ALM_BACKEND:http://localhost:9120/actuator/health}
+      agent-service: ${HEALTH_URL_AGENT_SERVICE:http://localhost:9160/actuator/health}
+      migration-service: ${HEALTH_URL_MIGRATION_SERVICE:http://localhost:9170/actuator/health}
+      board-service: ${HEALTH_URL_BOARD_SERVICE:http://localhost:9100/actuator/health}
+      # 도커가 루프백으로만 발행하는 공개 문서 인스턴스(19110은 dev 오프셋 wiki가 쓴다).
+      docs-backend: ${HEALTH_URL_DOCS_BACKEND:http://localhost:19910/actuator/health}
+      collaboration-service: ${HEALTH_URL_COLLABORATION_SERVICE:http://localhost:9150/health}
+      # search-service·eureka에는 actuator가 없다 — 404면 루트 200으로 판정한다
+      # (HealthCatalog.Probe.ACTUATOR_OR_ROOT). 나중에 actuator가 붙으면 버전까지 자동으로 잡힌다.
+      search-service: ${HEALTH_URL_SEARCH_SERVICE:http://localhost:9140/actuator/health}
+      eureka: ${HEALTH_URL_EUREKA:http://localhost:8761/actuator/health}
+      keycloak: ${HEALTH_URL_KEYCLOAK:}
+      minio: ${HEALTH_URL_MINIO:}
+      opensearch: ${HEALTH_URL_OPENSEARCH:}
+      loki: ${HEALTH_URL_LOKI:}
+      grafana: ${HEALTH_URL_GRAFANA:http://localhost:3000/api/health}

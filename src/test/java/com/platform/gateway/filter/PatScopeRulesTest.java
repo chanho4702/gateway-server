@@ -47,9 +47,13 @@ class PatScopeRulesTest {
         assertThat(required("/api/agent/mcp/tools/call", "POST")).containsExactly("admin");
     }
 
+    /** 정확히 그 경로 하나. 라우트도 Path=/api/me 단건이라 하위 경로를 열어줄 이유가 없다. */
     @Test
-    void 내_프로필은_스코프_없이_허용된다() {
+    void 내_프로필은_정확히_일치할_때만_허용된다() {
         assertThat(required("/api/me", "GET")).isEmpty();
+        forbidden("/api/me/", "GET");
+        forbidden("/api/me/tokens", "DELETE");
+        forbidden("/api/mercury", "GET");
     }
 
     /** 관리 화면 전용 — admin 스코프를 가진 PAT도 열지 못한다(설계 §2.1). */

@@ -15,7 +15,7 @@ final class HealthCatalog {
         SELF,
         /** Spring Boot Actuator {@code /actuator/health}(+{@code /actuator/info}의 build.version). */
         ACTUATOR,
-        /** Actuator가 없을 수도 있는 Spring 앱(eureka) — 404면 루트({@code /}) 200으로 판정. */
+        /** Actuator가 없을 수도 있는 Spring 앱(eureka·search-service) — 404면 루트({@code /}) 200으로 판정. */
         ACTUATOR_OR_ROOT,
         /** 2xx면 UP. Keycloak·MinIO·Loki·Grafana·collaboration-service. */
         PLAIN,
@@ -44,6 +44,9 @@ final class HealthCatalog {
             new Spec("board-service", "게시판 서비스", GROUP_SERVICE, Probe.ACTUATOR),
             new Spec("docs-backend", "공개 문서 백엔드", GROUP_SERVICE, Probe.ACTUATOR),
             new Spec("collaboration-service", "공동 편집 서비스", GROUP_SERVICE, Probe.PLAIN),
+            // 검색은 OpenSearch 없이 돌리는 배포에서 아예 없을 수 있다(라우트를 wiki-backend로 돌린다).
+            // 그때는 주소를 비워 행을 지운다. actuator 의존성이 없으므로 루트 폴백을 쓴다.
+            new Spec("search-service", "검색 서비스", GROUP_SERVICE, Probe.ACTUATOR_OR_ROOT),
             new Spec("eureka", "서비스 레지스트리", GROUP_INFRA, Probe.ACTUATOR_OR_ROOT),
             new Spec("keycloak", "Keycloak", GROUP_INFRA, Probe.PLAIN),
             new Spec("postgres", "PostgreSQL", GROUP_INFRA, Probe.DERIVED_DB),

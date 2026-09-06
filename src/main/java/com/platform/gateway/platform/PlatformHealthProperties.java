@@ -23,8 +23,14 @@ public class PlatformHealthProperties {
 
     private Map<String, String> targets = new LinkedHashMap<>();
 
-    /** 프로브 하나의 상한. 죽은 서비스 때문에 집계 전체가 늘어지면 안 된다. */
+    /** 프로브 하나의 상한. health와 info를 병렬로 받으므로 컴포넌트 총 소요도 이 값을 넘지 않는다. */
     private Duration probeTimeout = Duration.ofSeconds(3);
+
+    /**
+     * 집계 전체의 상한. 넘기면 그때까지 답한 것만으로 표를 만들고 못 받은 행은 UNKNOWN이 된다 —
+     * 느린 컴포넌트 하나가 대시보드 전체를 잡아두지 않게 하는 안전판이다.
+     */
+    private Duration aggregateTimeout = Duration.ofSeconds(5);
 
     /** 집계 결과 캐시. 화면을 몇 명이 보든 서비스가 받는 프로브는 이 주기당 1회다. */
     private Duration cacheTtl = Duration.ofSeconds(20);
@@ -43,6 +49,14 @@ public class PlatformHealthProperties {
 
     public void setProbeTimeout(Duration probeTimeout) {
         this.probeTimeout = probeTimeout;
+    }
+
+    public Duration getAggregateTimeout() {
+        return aggregateTimeout;
+    }
+
+    public void setAggregateTimeout(Duration aggregateTimeout) {
+        this.aggregateTimeout = aggregateTimeout;
     }
 
     public Duration getCacheTtl() {

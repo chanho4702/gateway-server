@@ -15,3 +15,26 @@ platform:
   # 관리자 판정용 org-service 직접 호출. 라우트의 ORG_SERVICE_URI와 같은 주소지만 별도 키다 —
   # 라우트 쪽은 lb://org-service로 둘 수 있고 WebClient는 그것을 해석하지 못한다.
   org-service-base-uri: ${ORG_SERVICE_BASE_URI:http://org-service:9130}
+  health:
+    # 헬스 집계 프로브 대상 — 컨테이너 네트워크에서는 서비스명이 DNS 호스트명이다(설계 §2.2 표).
+    # base(application.yml)의 localhost 기본값을 이 프로필이 통째로 덮는다. 항목별 env는 그대로 통한다.
+    # 값을 비우면 그 행이 표에서 사라진다 — 예: OpenSearch 없이 돌리는 배포는 HEALTH_URL_OPENSEARCH=
+    # 와 HEALTH_URL_SEARCH_SERVICE= 를 함께 비운다.
+    targets:
+      auth-server: ${HEALTH_URL_AUTH_SERVER:http://auth-server:9000/actuator/health}
+      org-service: ${HEALTH_URL_ORG_SERVICE:http://org-service:9130/actuator/health}
+      wiki-backend: ${HEALTH_URL_WIKI_BACKEND:http://wiki-backend:9110/actuator/health}
+      alm-backend: ${HEALTH_URL_ALM_BACKEND:http://alm-backend:9120/actuator/health}
+      agent-service: ${HEALTH_URL_AGENT_SERVICE:http://agent-service:9160/actuator/health}
+      migration-service: ${HEALTH_URL_MIGRATION_SERVICE:http://migration-service:9170/actuator/health}
+      board-service: ${HEALTH_URL_BOARD_SERVICE:http://board-service:9100/actuator/health}
+      docs-backend: ${HEALTH_URL_DOCS_BACKEND:http://docs-backend:9110/actuator/health}
+      collaboration-service: ${HEALTH_URL_COLLABORATION_SERVICE:http://collaboration-service:9150/health}
+      search-service: ${HEALTH_URL_SEARCH_SERVICE:http://search-service:9140/actuator/health}
+      eureka: ${HEALTH_URL_EUREKA:http://eureka:8761/actuator/health}
+      # KC 26 관리 포트. KC_HEALTH_ENABLED=true는 compose에 이미 켜져 있다.
+      keycloak: ${HEALTH_URL_KEYCLOAK:http://keycloak:9000/health/ready}
+      minio: ${HEALTH_URL_MINIO:http://minio:9000/minio/health/live}
+      opensearch: ${HEALTH_URL_OPENSEARCH:http://opensearch:9200/_cluster/health}
+      loki: ${HEALTH_URL_LOKI:http://loki:3100/ready}
+      grafana: ${HEALTH_URL_GRAFANA:http://grafana:3000/api/health}
