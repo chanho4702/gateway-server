@@ -34,6 +34,11 @@ import java.util.Map;
  * <p>PAT는 {@link PatScopeWebFilter}가 {@code /api/platform/**}을 전면 거부한다. 여기서 한 번 더
  * 닫는 것은 {@link PlatformController}와 같은 이유다 — 필터 규칙이 바뀌어도 이 경로는 열리지 않는다.
  *
+ * <p><b>이 세 필드가 프론트와의 계약이다.</b> wiki-front가 이 shape 그대로 색인 관리 메뉴를 지우므로,
+ * 이름·타입을 바꾸거나 값을 늘리는 변경은 wiki-front의 어댑터와 <b>같은 시점에</b> 나가야 한다.
+ * 프론트는 실패(404·401·5xx·JSON 아님)를 전부 {@code lite}로 접으므로, 필드를 없애는 변경은
+ * 오류가 아니라 <i>조용한 기능 꺼짐</i>으로 나타난다 — 그래서 눈에 띄지 않는다.
+ *
  * <p>캐시 헤더를 붙이지 않는다. 값은 기동 시 고정된 설정이고, 프론트가 세션당 1회만 부른다.
  */
 @RestController
