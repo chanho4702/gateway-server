@@ -64,11 +64,22 @@ class RouteConfigTest {
         for (Expect e : List.of(new Expect("org", "org-service"),
                 new Expect("wiki", "wiki-backend"),
                 new Expect("alm", "alm-backend"),
-                new Expect("search", "search-service"),
                 new Expect("agent", "agent-service"))) {
             var route = routes.stream().filter(r -> r.getId().equals(e.id())).findFirst().orElseThrow();
             assertThat(route.getUri()).as("route %s", e.id()).hasScheme("lb").hasHost(e.host());
         }
+    }
+
+    /**
+     * search는 다른 제품 라우트와 달리 대상이 SEARCH_MODE에서 파생된다. 기본 모드가 lite이므로
+     * <b>기본 대상은 search-service가 아니라 위키</b>다 — 검색을 끈 설치가 기본값이고, 켜는 쪽이
+     * SEARCH_MODE=opensearch를 명시한다(설계 §2.2). 다른 모드는 {@code SearchModeRouteTest}가 본다.
+     */
+    @Test
+    void searchRouteDefaultsToWikiLiteSearch() {
+        var routes = routeLocator.getRoutes().collectList().block();
+        var search = routes.stream().filter(r -> r.getId().equals("search")).findFirst().orElseThrow();
+        assertThat(search.getUri()).hasScheme("lb").hasHost("wiki-backend");
     }
 
     @Test

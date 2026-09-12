@@ -18,8 +18,8 @@ platform:
   health:
     # 헬스 집계 프로브 대상 — 컨테이너 네트워크에서는 서비스명이 DNS 호스트명이다(설계 §2.2 표).
     # base(application.yml)의 localhost 기본값을 이 프로필이 통째로 덮는다. 항목별 env는 그대로 통한다.
-    # 값을 비우면 그 행이 표에서 사라진다 — 예: OpenSearch 없이 돌리는 배포는 HEALTH_URL_OPENSEARCH=
-    # 와 HEALTH_URL_SEARCH_SERVICE= 를 함께 비운다.
+    # 값을 비우면 그 행이 표에서 사라진다. 검색 두 행은 손으로 비우지 않는다 — SEARCH_MODE가
+    # lite면 search-service·opensearch가, external이면 opensearch가 자동으로 빠진다(설계 §2.1).
     targets:
       auth-server: ${HEALTH_URL_AUTH_SERVER:http://auth-server:9000/actuator/health}
       org-service: ${HEALTH_URL_ORG_SERVICE:http://org-service:9130/actuator/health}

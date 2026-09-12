@@ -120,7 +120,7 @@ Compose는 `EUREKA_URI`와 `ORG_SERVICE_URI`/`WIKI_SERVICE_URI`/`ALM_SERVICE_URI
 | `wiki` | `/api/wiki/**` | `lb://wiki-backend` / **docker: `WIKI_SERVICE_URI`** | 스페이스·페이지·첨부. 경로 불변 |
 | `alm` | `/api/alm/**` | `lb://alm-backend` / **docker: `ALM_SERVICE_URI`** | 프로젝트·이슈. 경로 불변 |
 | `agent` | `/api/agent/**` | `lb://agent-service` / **docker: `AGENT_SERVICE_URI`** | 에이전트 REST·MCP. 경로 불변. `/api/agent/mcp/**`만 게이트웨이 permitAll(서비스가 자체 인증) |
-| `search` | `/api/search/**` | `lb://search-service` / **docker: `SEARCH_SERVICE_URI`** | **`StripPrefix=2`** + RateLimiter 5/15 |
+| `search` | `/api/search/**` | **`SEARCH_MODE`가 정한다** — `lite`(기본) → `lb://wiki-backend` / `opensearch`·`external` → `http://search-service:9140` | **`StripPrefix=2`** + RateLimiter 5/15. 아래 "설치 옵션 — 검색" 참조 |
 
 ### `search` 라우트의 StripPrefix=2 (No StripPrefix 원칙의 유일한 예외)
 
@@ -132,6 +132,33 @@ search-service는 갖지 않는다 — GraphQL이 단일 URL이라 접두사를 
 | `POST /api/search/graphql` | `POST /graphql` |
 | `POST /api/search/admin/reindex` | `POST /admin/reindex` |
 | `GET /api/search/admin/reindex/{jobId}` | `GET /admin/reindex/{jobId}` |
+
+### 설치 옵션 — 검색 (`SEARCH_MODE`)
+
+통합 검색은 **켜고 끌 수 있는 설치 옵션**이다. 끈다는 것은 검색이 없어진다는 뜻이 아니라 **라이트 검색**으로 내려간다는 뜻이다 — wiki-backend가 search-service와 같은 GraphQL 계약을 Postgres(`pg_trgm`)로 구현하고 있어 프론트는 무수정으로 동작한다.
+
+| `SEARCH_MODE` | `/api/search/**` 대상 | 헬스 표에서 빠지는 행 | `/api/platform/features` |
+|---|---|---|---|
+| `lite`(기본) | `WIKI_SERVICE_URI` → 없으면 `lb://wiki-backend` | `search-service`·`opensearch` | `unified:false`, `reindex:false` |
+| `opensearch` | `http://search-service:9140` | 없음 | `unified:true`, `reindex:true` |
+| `external` | `http://search-service:9140` | `opensearch`(고객사 클러스터) | `unified:true`, `reindex:true` |
+
+- **스위치는 하나다.** 라우트 대상·헬스 프로브 행·프론트 기능 플래그가 전부 이 값에서 파생한다(`SearchModeEnvironmentPostProcessor`). 각각을 손으로 맞추게 하면 반쪽만 바뀐 배포가 생긴다.
+- **모르는 값은 기동을 막지 않는다.** 경고 한 줄을 남기고 `lite`로 간다 — 오타 하나로 단일 진입점 전체가 안 뜨는 편이 더 나쁘다.
+- **`SEARCH_SERVICE_URI`는 탈출구다.** 명시하면 모드와 무관하게 이긴다. 그래서 compose는 이 값을 **기본으로 채워두면 안 된다** — 채워두면 `SEARCH_MODE`가 무력화된다.
+- **모드를 바꾸면 게이트웨이를 재기동해야 한다.** 라우트 대상이 기동 시점에 확정된다. `.env`만 고치고 재기동하지 않으면 아무 변화도 없다.
+- `lite`에서 `/api/search/admin/reindex`는 404다. 색인이 없으니 재색인할 것도 없고, 그래서 프론트는 `features.search.reindex`로 색인 관리 메뉴를 지운다.
+- 기동 로그에 `검색 모드 <mode> — /api/search/** → <대상>` 한 줄이 남는다. 장애 조사에서 가장 먼저 볼 값이다.
+
+### `GET /api/platform/features`
+
+로그인한 **모든** 사용자가 읽는다(관리자 판정 없음). PAT는 `/api/platform/**` 규칙 그대로 거부된다.
+
+```json
+{ "search": { "mode": "lite", "unified": false, "reindex": false } }
+```
+
+프론트는 **실패를 `lite`로 읽는다** — 게이트웨이를 거치지 않는 공개 문서 인스턴스(`/docs/`)나 구버전 게이트웨이(404)에서도 화면이 깨지지 않는다.
 
 `parts` 값이 틀리면 다운스트림이 조용히 404를 낸다. 값을 바꾸면 `RouteConfigTest`의 `StripPrefix parts = 2` 단언이 깨진다.
 
@@ -172,7 +199,8 @@ search-service는 갖지 않는다 — GraphQL이 단일 URL이라 접두사를 
 | `COLLABORATION_SERVICE_URI` | `ws://localhost:19150` | `ws://collaboration-service:9150` |
 | `ALM_SERVICE_URI` | `lb://alm-backend` (유레카 해석) | `http://alm-backend:9120` (**docker 필수** — 유레카 미등록) |
 | `AGENT_SERVICE_URI` | `lb://agent-service` (유레카 해석) | `http://agent-service:9160` |
-| `SEARCH_SERVICE_URI` | `lb://search-service` (유레카 해석) | `http://search-service:9140` (**docker 필수** — 유레카 미등록) |
+| `SEARCH_MODE` | `lite` | `lite` \| `opensearch` \| `external` — 검색 설치 옵션. 라우트 대상·헬스 표의 검색 행·`/api/platform/features`가 전부 이 값을 따른다 |
+| `SEARCH_SERVICE_URI` | (없음) | **탈출구** — 명시하면 `SEARCH_MODE`와 무관하게 이긴다. 비워 두어야 모드 스위치가 산다 |
 | `CORS_ALLOWED_ORIGIN` | `http://localhost:5173` | `http://localhost:5173` |
 | `AUTH_JWKS_URI` | `http://localhost:9000/.well-known/jwks.json` | `http://auth-server:9000/...` |
 | `PLATFORM_ISSUER` | `http://localhost:9000` | auth-server 발급 iss와 일치 |
@@ -183,7 +211,9 @@ search-service는 갖지 않는다 — GraphQL이 단일 URL이라 접두사를 
 
 **Docker DNS 설명:** Docker Compose 네트워크 안에서는 `docker-compose.yml`의 **서비스명이 곧 DNS 호스트명**이 된다. 컨테이너끼리 `auth-server`, `wiki-backend`, `search-service` 등으로 직접 찾을 수 있어서, 환경변수에 `http://search-service:9140` 처럼 서비스명을 사용한다. 로컬 직접 실행 시에는 기본값인 `localhost`가 적용된다. (`CORS_ALLOWED_ORIGIN`은 **브라우저 주소창 기준** 오리진이므로 컨테이너 안에서도 `localhost:5173` 그대로다.)
 
-`org-service`·`wiki-backend`·`alm-backend`·`search-service`는 `docker` 프로필에서 **유레카에 등록하지 않는다**(확정 설계). 따라서 네 `*_SERVICE_URI`는 컨테이너 배포에서 선택이 아니라 **필수**다 — 빠지면 `lb://` 기본값을 해석할 방법이 없어 해당 라우트 전체가 503이 된다.
+`org-service`·`alm-backend`·`search-service`는 `docker` 프로필에서 **유레카에 등록하지 않는다**(확정 설계). 따라서 `ORG_SERVICE_URI`·`ALM_SERVICE_URI`는 컨테이너 배포에서 선택이 아니라 **필수**다 — 빠지면 `lb://` 기본값을 해석할 방법이 없어 해당 라우트 전체가 503이 된다. search-service도 같은 이유로 컨테이너에서 `lb://`가 통하지 않기 때문에, 비-lite 모드의 기본 대상이 유레카가 아니라 DNS 이름(`http://search-service:9140`)이다.
+
+`wiki-backend`는 컨테이너에서도 유레카에 등록한다(인스턴스가 여럿일 수 있다). compose가 `WIKI_SERVICE_URI`를 일부러 주입하지 않는 이유이고, `lite` 모드의 검색이 `lb://wiki-backend`로 가는 근거이기도 하다.
 
 반대로 `auth-server`·`board-service`는 컨테이너에서도 유레카에 등록되므로 `AUTH_SERVER_URI`/`BOARD_SERVICE_URI`를 주입하지 않는다 — compose의 게이트웨이 env를 보면 이 둘은 없고 `EUREKA_URI`만 있다. **즉 컨테이너 스택에서 eureka는 여전히 필수 구성요소다.**
 

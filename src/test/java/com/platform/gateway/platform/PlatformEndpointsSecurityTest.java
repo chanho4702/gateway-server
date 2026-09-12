@@ -41,17 +41,25 @@ class PlatformEndpointsSecurityTest {
     @Test
     void platform_경로는_게이트웨이_컨트롤러가_처리한다() {
         for (String path : new String[]{"/api/platform/health", "/api/platform/stats/tokens"}) {
-            MockServerHttpRequest request = MockServerHttpRequest.get(path).build();
-            Object handler = handlerMapping.getHandler(MockServerWebExchange.from(request)).block();
-            assertThat(handler).as("%s 핸들러", path).isInstanceOf(HandlerMethod.class);
-            assertThat(((HandlerMethod) handler).getBeanType()).isEqualTo(PlatformController.class);
+            assertThat(handlerBeanType(path)).as("%s 핸들러", path).isEqualTo(PlatformController.class);
         }
+        // features는 AdminGate를 태우지 않으려고 컨트롤러를 나눴다 — 같은 접두사지만 다른 빈이다.
+        assertThat(handlerBeanType("/api/platform/features")).isEqualTo(PlatformFeaturesController.class);
+    }
+
+    private Class<?> handlerBeanType(String path) {
+        MockServerHttpRequest request = MockServerHttpRequest.get(path).build();
+        Object handler = handlerMapping.getHandler(MockServerWebExchange.from(request)).block();
+        assertThat(handler).as("%s 핸들러", path).isInstanceOf(HandlerMethod.class);
+        return ((HandlerMethod) handler).getBeanType();
     }
 
     @Test
     void platform_경로는_로그인_없이는_401이다() {
         client().get().uri("/api/platform/health").exchange().expectStatus().isUnauthorized();
         client().get().uri("/api/platform/stats/tokens").exchange().expectStatus().isUnauthorized();
+        // 기능 플래그는 관리자 판정을 태우지 않지만 로그인은 요구한다(설계 §6.2).
+        client().get().uri("/api/platform/features").exchange().expectStatus().isUnauthorized();
     }
 
     /**

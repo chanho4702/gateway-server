@@ -2,6 +2,8 @@ package com.platform.gateway.platform;
 
 import com.platform.gateway.platform.HealthCatalog.Spec;
 import com.platform.gateway.platform.HealthReport.ComponentHealth;
+import com.platform.gateway.search.SearchMode;
+import com.platform.gateway.search.SearchProperties;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.info.BuildProperties;
@@ -65,6 +67,7 @@ public class HealthAggregator {
     private final Duration aggregateTimeout;
     private final Duration cacheTtl;
     private final String selfVersion;
+    private final SearchMode searchMode;
     private final Mono<HealthReport> cached;
 
     /**
@@ -74,21 +77,24 @@ public class HealthAggregator {
     private final Set<String> actuatorAbsent = ConcurrentHashMap.newKeySet();
 
     @Autowired
-    public HealthAggregator(PlatformHealthProperties properties, ObjectProvider<BuildProperties> buildProperties) {
+    public HealthAggregator(PlatformHealthProperties properties, SearchProperties searchProperties,
+                            ObjectProvider<BuildProperties> buildProperties) {
         this(WebClient.builder(), properties.getTargets(), properties.getProbeTimeout(),
                 properties.getAggregateTimeout(), properties.getCacheTtl(),
-                versionOf(buildProperties.getIfAvailable()));
+                versionOf(buildProperties.getIfAvailable()), searchProperties.getMode());
     }
 
     /** 테스트용 — MockWebServer 주소 맵과 짧은 타임아웃·TTL을 직접 준다. */
     HealthAggregator(WebClient.Builder builder, Map<String, String> targets, Duration probeTimeout,
-                     Duration aggregateTimeout, Duration cacheTtl, String selfVersion) {
+                     Duration aggregateTimeout, Duration cacheTtl, String selfVersion,
+                     SearchMode searchMode) {
         this.webClient = builder.build();
         this.targets = Map.copyOf(targets);
         this.probeTimeout = probeTimeout;
         this.aggregateTimeout = aggregateTimeout;
         this.cacheTtl = cacheTtl;
         this.selfVersion = selfVersion;
+        this.searchMode = searchMode == null ? SearchMode.DEFAULT : searchMode;
         // 값은 TTL만큼, 실패는 짧게 캐시한다. 진행 중인 수집은 후발 구독자가 공유한다(중복 프로브 방지).
         this.cached = Mono.defer(this::collect)
                 .cache(value -> this.cacheTtl, error -> FAILURE_TTL, () -> FAILURE_TTL);
@@ -118,8 +124,17 @@ public class HealthAggregator {
                 .then(Mono.fromSupplier(() -> assemble(checkedAt, collected)));
     }
 
-    /** 주소가 설정된 것만 프로브한다 — 값을 비우면 그 행 자체가 사라진다(OpenSearch 없는 배포 등). */
+    /**
+     * 주소가 설정된 것만 프로브한다 — 값을 비우면 그 행 자체가 사라진다.
+     *
+     * <p>검색 두 행은 그 앞에 조건이 하나 더 있다: {@code SEARCH_MODE}가 {@code lite}면
+     * search-service·opensearch가 아예 없고, {@code external}이면 OpenSearch가 고객사 것이다.
+     * 없는 것을 프로브해 항상 DOWN인 행을 띄우면 대시보드가 거짓말을 한다(설계 §2.1 A안).
+     */
     private boolean isProbed(Spec spec) {
+        if (!searchMode.probesComponent(spec.id())) {
+            return false;
+        }
         return switch (spec.probe()) {
             case SELF, DERIVED_DB, DERIVED_REDIS -> false;
             default -> {

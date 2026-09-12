@@ -1,6 +1,7 @@
 package com.platform.gateway.platform;
 
 import com.platform.gateway.platform.HealthReport.ComponentHealth;
+import com.platform.gateway.search.SearchMode;
 import okhttp3.mockwebserver.Dispatcher;
 import okhttp3.mockwebserver.MockResponse;
 import okhttp3.mockwebserver.MockWebServer;
@@ -88,8 +89,25 @@ class HealthAggregatorTest {
 
     private HealthAggregator aggregator(Map<String, String> targets, Duration probeTimeout,
                                         Duration aggregateTimeout, Duration cacheTtl) {
+        // 기본은 opensearch — 검색 두 행이 살아 있는 상태가 이 스위트 대부분의 전제다.
+        // 모드가 행을 지우는 쪽은 아래 "검색 모드" 절에서 따로 본다.
+        return aggregator(targets, probeTimeout, aggregateTimeout, cacheTtl, SearchMode.OPENSEARCH);
+    }
+
+    private HealthAggregator aggregator(Map<String, String> targets, Duration probeTimeout,
+                                        Duration aggregateTimeout, Duration cacheTtl,
+                                        SearchMode searchMode) {
         return new HealthAggregator(WebClient.builder(), targets, probeTimeout, aggregateTimeout,
-                cacheTtl, "9.9.9");
+                cacheTtl, "9.9.9", searchMode);
+    }
+
+    private HealthAggregator aggregator(Map<String, String> targets, SearchMode searchMode) {
+        return aggregator(targets, Duration.ofSeconds(5), Duration.ofSeconds(20), Duration.ofSeconds(20),
+                searchMode);
+    }
+
+    private static boolean hasComponent(HealthReport report, String id) {
+        return report.components().stream().anyMatch(c -> c.id().equals(id));
     }
 
     private static ComponentHealth component(HealthReport report, String id) {
@@ -354,5 +372,75 @@ class HealthAggregatorTest {
 
         assertThat(hits("/wiki/actuator/health")).isEqualTo(1);
         assertThat(second.checkedAt()).isEqualTo(first.checkedAt());
+    }
+
+    // --- 검색 모드(SEARCH_MODE) --------------------------------------------------
+
+    /**
+     * lite 배포에는 search-service·opensearch 컨테이너가 아예 없다. 주소는 여전히 기본값으로
+     * 채워져 있으므로(운영자가 손으로 비우지 않는다) 모드가 두 행을 지워야 한다 — 안 그러면
+     * 대시보드가 20초마다 없는 컨테이너를 두들기고 항상 DOWN인 행 둘을 띄운다.
+     */
+    @Test
+    void lite_모드에서는_검색_두_행이_사라진다() {
+        route("/search/actuator/health", actuator("UP", "UP", "UP"));
+        route("/os/_cluster/health", json(200, "{\"status\":\"green\"}"));
+        Map<String, String> targets = new LinkedHashMap<>();
+        targets.put("wiki-backend", url("/wiki/actuator/health"));
+        targets.put("search-service", url("/search/actuator/health"));
+        targets.put("opensearch", url("/os/_cluster/health"));
+        route("/wiki/actuator/health", actuator("UP", "UP", "UP"));
+
+        HealthReport report = aggregator(targets, SearchMode.LITE).report().block();
+
+        assertThat(hasComponent(report, "search-service")).isFalse();
+        assertThat(hasComponent(report, "opensearch")).isFalse();
+        assertThat(hasComponent(report, "wiki-backend")).isTrue();
+        assertThat(hits("/search/actuator/health")).isZero();
+        assertThat(hits("/os/_cluster/health")).isZero();
+    }
+
+    /** external은 search-service가 우리 것이고 OpenSearch만 고객사 것이다 — 남의 클러스터는 안 본다. */
+    @Test
+    void external_모드에서는_opensearch_행만_사라진다() {
+        route("/search/actuator/health", actuator("UP", "UP", "UP"));
+        route("/os/_cluster/health", json(200, "{\"status\":\"green\"}"));
+        Map<String, String> targets = new LinkedHashMap<>();
+        targets.put("search-service", url("/search/actuator/health"));
+        targets.put("opensearch", url("/os/_cluster/health"));
+
+        HealthReport report = aggregator(targets, SearchMode.EXTERNAL).report().block();
+
+        assertThat(hasComponent(report, "search-service")).isTrue();
+        assertThat(hasComponent(report, "opensearch")).isFalse();
+        assertThat(hits("/os/_cluster/health")).isZero();
+    }
+
+    /** opensearch 모드는 모드 도입 전과 같다 — 두 행 모두 남는다. */
+    @Test
+    void opensearch_모드에서는_두_행_모두_남는다() {
+        route("/search/actuator/health", actuator("UP", "UP", "UP"));
+        route("/os/_cluster/health", json(200, "{\"status\":\"green\"}"));
+        Map<String, String> targets = new LinkedHashMap<>();
+        targets.put("search-service", url("/search/actuator/health"));
+        targets.put("opensearch", url("/os/_cluster/health"));
+
+        HealthReport report = aggregator(targets, SearchMode.OPENSEARCH).report().block();
+
+        assertThat(component(report, "search-service").status()).isEqualTo("UP");
+        assertThat(component(report, "opensearch").status()).isEqualTo("UP");
+    }
+
+    /** 모드와 무관하게 "주소를 비우면 사라진다"는 기존 규칙은 그대로다. */
+    @Test
+    void opensearch_모드라도_주소가_비면_행이_사라진다() {
+        Map<String, String> targets = new LinkedHashMap<>();
+        targets.put("search-service", "");
+        targets.put("opensearch", "   ");
+
+        HealthReport report = aggregator(targets, SearchMode.OPENSEARCH).report().block();
+
+        assertThat(hasComponent(report, "search-service")).isFalse();
+        assertThat(hasComponent(report, "opensearch")).isFalse();
     }
 }

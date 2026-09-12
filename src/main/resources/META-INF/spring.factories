@@ -1,0 +1,4 @@
+# SEARCH_MODE -> 라우트 대상 파생. 라우트 uri는 플레이스홀더가 풀린 문자열로 바인딩되므로
+# 바인딩보다 먼저(EnvironmentPostProcessor 단계) 값을 계산해 넣어야 한다.
+org.springframework.boot.EnvironmentPostProcessor=\
+com.platform.gateway.search.SearchModeEnvironmentPostProcessor
