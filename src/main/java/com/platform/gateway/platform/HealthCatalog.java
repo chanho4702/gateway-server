@@ -45,7 +45,8 @@ final class HealthCatalog {
             new Spec("docs-backend", "공개 문서 백엔드", GROUP_SERVICE, Probe.ACTUATOR),
             new Spec("collaboration-service", "공동 편집 서비스", GROUP_SERVICE, Probe.PLAIN),
             // 검색은 OpenSearch 없이 돌리는 배포에서 아예 없을 수 있다(라우트를 wiki-backend로 돌린다).
-            // 그때는 주소를 비워 행을 지운다. actuator 의존성이 없으므로 루트 폴백을 쓴다.
+            // 그때는 주소를 비워 행을 지운다. actuator를 뒤늦게 붙였으므로 이제 버전 열도 채워지지만,
+            // 그 이전 이미지가 아직 떠 있을 수 있어 루트 폴백은 남긴다.
             new Spec("search-service", "검색 서비스", GROUP_SERVICE, Probe.ACTUATOR_OR_ROOT),
             new Spec("eureka", "서비스 레지스트리", GROUP_INFRA, Probe.ACTUATOR_OR_ROOT),
             new Spec("keycloak", "Keycloak", GROUP_INFRA, Probe.PLAIN),
