@@ -31,6 +31,36 @@ class PatScopeRulesTest {
         assertThat(required("/api/alm/issues", "HEAD")).containsExactly("alm:read");
         assertThat(required("/api/org/members", "DELETE")).containsExactly("org:write");
         assertThat(required("/api/org/me", "OPTIONS")).containsExactly("org:read");
+        assertThat(required("/api/board/posts", "GET")).containsExactly("board:read");
+        assertThat(required("/api/board/posts/9/comments", "POST")).containsExactly("board:write");
+        assertThat(required("/api/board/posts/9", "DELETE")).containsExactly("board:write");
+    }
+
+    /**
+     * 검색은 질의 표면이 GraphQL 단일 URL(POST)뿐이라 메서드로 읽기/쓰기를 가르지 않는다.
+     * GET만 read로 인정하면 search:read로는 아무것도 호출할 수 없다.
+     */
+    @Test
+    void 검색은_메서드와_무관하게_search_read만_요구한다() {
+        assertThat(required("/api/search/graphql", "POST")).containsExactly("search:read");
+        assertThat(required("/api/search/graphql", "GET")).containsExactly("search:read");
+        assertThat(required("/api/search", "OPTIONS")).containsExactly("search:read");
+    }
+
+    /** 색인을 바꾸는 유일한 경로. 제품 스코프 + admin — 다른 제품의 admin 경로와 같은 규칙이다. */
+    @Test
+    void 재색인은_search_read에_admin을_추가로_요구한다() {
+        assertThat(required("/api/search/admin/reindex", "POST"))
+                .containsExactlyInAnyOrder("search:read", "admin");
+        assertThat(PatScopeRules.satisfies(List.of("search:read"), Set.of("search:read", "admin"))).isFalse();
+    }
+
+    /** 어떤 메서드로도 search:write를 요구하지 않는다 — 그런 스코프는 발급되지 않는다. */
+    @Test
+    void 검색은_어떤_메서드로도_write를_요구하지_않는다() {
+        for (String method : List.of("GET", "POST", "PUT", "PATCH", "DELETE")) {
+            assertThat(required("/api/search/graphql", method)).doesNotContain("search:write");
+        }
     }
 
     @Test
@@ -38,6 +68,7 @@ class PatScopeRulesTest {
         assertThat(required("/api/wiki/admin/stats", "GET")).containsExactlyInAnyOrder("wiki:read", "admin");
         assertThat(required("/api/org/admin/stats", "GET")).containsExactlyInAnyOrder("org:read", "admin");
         assertThat(required("/api/alm/admin/audit", "POST")).containsExactlyInAnyOrder("alm:write", "admin");
+        assertThat(required("/api/board/admin/purge", "POST")).containsExactlyInAnyOrder("board:write", "admin");
     }
 
     @Test
@@ -66,10 +97,10 @@ class PatScopeRulesTest {
 
     @Test
     void 표에_없는_접두사는_PAT를_거부한다() {
-        forbidden("/api/board/posts", "GET");
         forbidden("/api/auth/tokens", "POST");
-        forbidden("/api/search/graphql", "POST");
         forbidden("/api/unknown", "GET");
+        forbidden("/api/boards/posts", "GET"); // board 아님
+        forbidden("/api/searching", "GET");    // search 아님
     }
 
     /** 로그인 리다이렉트·JWKS·fallback은 PAT가 끼어들 자리가 아니지만, 막으면 공개 흐름만 깨진다. */

@@ -13,20 +13,29 @@ import java.util.Set;
  * <table>
  *   <caption>경로 → 요구 스코프</caption>
  *   <tr><td>{@code /api/me}</td><td>없음(항상 허용)</td></tr>
- *   <tr><td>{@code /api/wiki/**} · {@code /api/alm/**} · {@code /api/org/**}</td>
+ *   <tr><td>{@code /api/wiki/**} · {@code /api/alm/**} · {@code /api/org/**} · {@code /api/board/**}</td>
  *       <td>{@code <제품>:read}(GET·HEAD·OPTIONS) 또는 {@code <제품>:write}</td></tr>
+ *   <tr><td>{@code /api/search/**}</td><td>{@code search:read} — 메서드 무관(아래 설명)</td></tr>
  *   <tr><td>{@code /api/*}{@code /admin/**}</td><td>위에 더해 {@code admin}</td></tr>
  *   <tr><td>{@code /api/migration/**} · {@code /api/agent/**}</td><td>{@code admin}</td></tr>
  *   <tr><td>{@code /api/platform/**}</td><td><b>PAT 전면 거부</b>(관리 화면 전용)</td></tr>
- *   <tr><td>그 외 {@code /api/**}</td><td><b>PAT 거부</b>(board·auth·search 등)</td></tr>
+ *   <tr><td>그 외 {@code /api/**}</td><td><b>PAT 거부</b>(auth 등)</td></tr>
  *   <tr><td>{@code /api/}로 시작하지 않는 경로</td><td>없음 — 로그인 리다이렉트·JWKS·fallback 등 공개 흐름</td></tr>
  * </table>
+ *
+ * <p><b>검색만 메서드를 보지 않는 이유.</b> search-service의 질의 표면은 GraphQL 단일 URL
+ * ({@code POST /api/search/graphql}) 하나뿐이고 GET 검색 엔드포인트가 없다. 읽기를 GET으로만
+ * 인정하면 {@code search:read}로는 검색을 한 번도 호출할 수 없다. 그래서 검색은 쓰기 스코프를
+ * 아예 만들지 않고({@code search:write} 없음) 메서드와 무관하게 {@code search:read}만 요구한다 —
+ * 색인을 바꾸는 유일한 경로인 {@code /api/search/admin/reindex}는 {@code admin}이 따로 지킨다.
  */
 public final class PatScopeRules {
 
-    private static final Set<String> PRODUCTS = Set.of("wiki", "alm", "org");
+    private static final Set<String> PRODUCTS = Set.of("wiki", "alm", "org", "board");
     /** 제품 스코프가 없는 대신 admin만 요구하는 접두사. */
     private static final Set<String> ADMIN_ONLY = Set.of("migration", "agent");
+    /** 읽기 전용 제품 — 메서드와 무관하게 {@code <제품>:read}만 요구한다(클래스 주석 참고). */
+    private static final Set<String> READ_ONLY_PRODUCTS = Set.of("search");
     private static final String ADMIN = "admin";
 
     private PatScopeRules() {
@@ -69,9 +78,10 @@ public final class PatScopeRules {
         if (ADMIN_ONLY.contains(first)) {
             return new Rule.Required(Set.of(ADMIN));
         }
-        if (PRODUCTS.contains(first)) {
+        boolean readOnly = READ_ONLY_PRODUCTS.contains(first);
+        if (readOnly || PRODUCTS.contains(first)) {
             Set<String> required = new LinkedHashSet<>();
-            required.add(first + ":" + (isRead(method) ? "read" : "write"));
+            required.add(first + ":" + (readOnly || isRead(method) ? "read" : "write"));
             if (ADMIN.equals(second)) {
                 required.add(ADMIN);
             }

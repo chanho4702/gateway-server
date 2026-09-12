@@ -93,9 +93,26 @@ class PatScopeWebFilterTest {
     }
 
     @Test
-    void 표에_없는_접두사는_스코프를_다_가져도_거부다() {
+    void 게시판은_읽기_쓰기_스코프로_갈린다() {
         denied("GET", "/api/board/posts", pat("wiki:write", "alm:write", "org:write", "admin"));
+        allowed("GET", "/api/board/posts", pat("board:read"));
+        denied("POST", "/api/board/posts", pat("board:read"));
+        allowed("POST", "/api/board/posts", pat("board:write"));
+    }
+
+    /** 검색 질의는 POST(GraphQL)뿐이라 search:read가 그대로 통해야 한다. */
+    @Test
+    void 검색은_POST여도_search_read로_통과한다() {
+        denied("POST", "/api/search/graphql", pat("wiki:read", "board:read"));
+        allowed("POST", "/api/search/graphql", pat("search:read"));
+        denied("POST", "/api/search/admin/reindex", pat("search:read"));
+        allowed("POST", "/api/search/admin/reindex", pat("search:read", "admin"));
+    }
+
+    @Test
+    void 표에_없는_접두사는_스코프를_다_가져도_거부다() {
         denied("POST", "/api/auth/tokens", pat("admin"));
+        denied("GET", "/api/boards/posts", pat("board:write", "admin"));
     }
 
     @Test
