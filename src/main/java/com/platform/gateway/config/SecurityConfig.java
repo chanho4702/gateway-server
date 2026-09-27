@@ -32,6 +32,14 @@ public class SecurityConfig {
 
     private static final String MCP_PATH = "/api/agent/mcp";
     private static final String MCP_SUBPATHS = "/api/agent/mcp/**";
+    /**
+     * 러너 프로토콜(agent-service AGP-69) — 러너 토큰(agr_*, JWT 아님)으로 agent-service가 자체 인증한다. MCP와 같은 함정이라
+     * 같은 체인에 둔다. 러너 관리 API({@code GET/POST /api/agent/runners}, {@code DELETE /api/agent/runners/{id}})는 사람 JWT라
+     * 여기 넣지 않는다 — 이 네 경로만(agent-service RunnerPaths와 동기).
+     */
+    private static final String[] RUNNER_PROTOCOL_PATHS = {
+            "/api/agent/runners/heartbeat", "/api/agent/runners/claim", "/api/agent/runners/harness",
+            "/api/agent/runners/runs/**"};
 
     /**
      * {@code /api/agent/mcp/**} 전용 체인 — 완전히 분리한다. 같은 체인에 oauth2ResourceServer(jwt)를
@@ -47,13 +55,20 @@ public class SecurityConfig {
     @Order(1)
     SecurityWebFilterChain mcpSecurityWebFilterChain(ServerHttpSecurity http, CorsConfigurationSource corsSource) {
         http
-                .securityMatcher(ServerWebExchangeMatchers.pathMatchers(MCP_PATH, MCP_SUBPATHS))
+                .securityMatcher(ServerWebExchangeMatchers.pathMatchers(
+                        concat(new String[]{MCP_PATH, MCP_SUBPATHS}, RUNNER_PROTOCOL_PATHS)))
                 .csrf(ServerHttpSecurity.CsrfSpec::disable)
                 .httpBasic(ServerHttpSecurity.HttpBasicSpec::disable)
                 .formLogin(ServerHttpSecurity.FormLoginSpec::disable)
                 .cors(cors -> cors.configurationSource(corsSource))
                 .authorizeExchange(auth -> auth.anyExchange().permitAll());
         return http.build();
+    }
+
+    private static String[] concat(String[] a, String[] b) {
+        String[] out = java.util.Arrays.copyOf(a, a.length + b.length);
+        System.arraycopy(b, 0, out, a.length, b.length);
+        return out;
     }
 
     /** 그 외 모든 경로 — 기존과 동일한 JWT 리소스서버 조기차단. */

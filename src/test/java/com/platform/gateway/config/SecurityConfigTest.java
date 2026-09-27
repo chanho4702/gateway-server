@@ -78,6 +78,31 @@ class SecurityConfigTest {
         client().get().uri("/api/agent/personas").exchange().expectStatus().isUnauthorized();
     }
 
+    /** 러너 프로토콜(agr_*)도 MCP처럼 JWT 체인을 타지 않는다 — 판정은 agent-service RunnerAuthFilter. */
+    @Test
+    void runnerProtocolPathsBypassJwt() {
+        for (String uri : new String[]{"/api/agent/runners/heartbeat", "/api/agent/runners/claim",
+                "/api/agent/runners/runs/7/result"}) {
+            client().post().uri(uri)
+                    .header("Authorization", "Bearer agr_dummyRunnerTokenNotAJwt")
+                    .exchange()
+                    .expectStatus().value(status -> assertThat(status).isNotEqualTo(401));
+        }
+        client().get().uri("/api/agent/runners/harness")
+                .header("Authorization", "Bearer agr_dummyRunnerTokenNotAJwt")
+                .exchange()
+                .expectStatus().value(status -> assertThat(status).isNotEqualTo(401));
+    }
+
+    /** 러너 관리 API는 사람 JWT 경로다 — permitAll 체인으로 새지 않는다. */
+    @Test
+    void runnerAdminPathsStillRequireJwt() {
+        client().get().uri("/api/agent/runners").exchange().expectStatus().isUnauthorized();
+        client().post().uri("/api/agent/runners").exchange().expectStatus().isUnauthorized();
+        client().delete().uri("/api/agent/runners/3").exchange().expectStatus().isUnauthorized();
+        client().get().uri("/api/agent/execution-site/projects/1").exchange().expectStatus().isUnauthorized();
+    }
+
     @Test
     void garbageBearerTokenIs401() {
         client().get().uri("/api/me")
