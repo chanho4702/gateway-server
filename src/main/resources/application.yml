@@ -140,6 +140,14 @@ spring:
                 - Path=/api/alm/**
             # agent-service — 에이전트 REST. 컨트롤러가 /api/agent 접두사를 소유한다(StripPrefix 없음).
             # dev/기본: lb://(Eureka) · docker: AGENT_SERVICE_URI DNS 직결 — org/alm과 동일 분기.
+            # 사무실 실시간 스트림(SSE, agent-service AGP-57) — 전역 response-timeout 10s는 "읽기 사이 최대 간격"이라
+            # 15초 heartbeat 스트림을 끊는다. 이 경로만 끈다(-1). 아래 agent 라우트보다 먼저 와야 매칭된다.
+            - id: agent-office-stream
+              uri: ${AGENT_SERVICE_URI:lb://agent-service}
+              predicates:
+                - Path=/api/agent/office/stream
+              metadata:
+                response-timeout: -1
             - id: agent
               uri: ${AGENT_SERVICE_URI:lb://agent-service}
               predicates:
