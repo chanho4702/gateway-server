@@ -228,6 +228,14 @@ spring:
                 - Path=/api/agent/office/stream
               metadata:
                 response-timeout: -1
+              # 장애 시 일반 agent 라우트와 같은 계약 503(/fallback/agent). CB 이름을 agent로 공유해
+              # disable-time-limiter-map.agent가 그대로 적용된다 — TimeLimiter가 장시간 스트림을 자르지 않는다.
+              # Retry는 걸지 않는다(스트림 재연결은 브라우저 EventSource 몫).
+              filters:
+                - name: CircuitBreaker
+                  args:
+                    name: agent
+                    fallbackUri: forward:/fallback/agent
             - id: agent
               uri: ${AGENT_SERVICE_URI:lb://agent-service}
               predicates:

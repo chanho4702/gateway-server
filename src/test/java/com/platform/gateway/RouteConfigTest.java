@@ -159,7 +159,7 @@ class RouteConfigTest {
     void productRoutesHaveCircuitBreaker() {
         List<org.springframework.cloud.gateway.route.Route> routes =
                 routeLocator.getRoutes().collectList().block();
-        for (String id : List.of("board", "org", "wiki", "wiki-long", "alm", "alm-long", "agent", "migration", "search")) {
+        for (String id : List.of("board", "org", "wiki", "wiki-long", "alm", "alm-long", "agent", "agent-office-stream", "migration", "search")) {
             var route = routes.stream().filter(r -> r.getId().equals(id)).findFirst().orElseThrow();
             assertThat(route.getFilters().toString()).as("route %s에 CircuitBreaker", id).contains("CircuitBreaker");
         }
