@@ -12,8 +12,8 @@ import org.springframework.test.web.reactive.server.WebTestClient;
 import java.time.Duration;
 
 /**
- * board 외 제품 라우트도 다운스트림 불능 시 계약된 {@code 503 {"error": "<서비스>_unavailable"}}로
- * 떨어지는지(P-10). 이전에는 SCG 기본 오류 본문({@code timestamp/path/status/error})이 나가
+ * board 외 제품 라우트도 다운스트림 불능 시 계약된 {@code 503 {"error": 메시지}}로
+ * 떨어지는지(P-10) — 문구는 한국어(board만 기존 코드). 이전에는 SCG 기본 오류 본문({@code timestamp/path/status/error})이 나가
  * 프론트의 "503 → 장애 안내" 매핑이 깨졌다. 닫힌 포트 → connection refused.
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT, properties = {
@@ -56,24 +56,32 @@ class ServiceFallbackTest {
                 .exchange()
                 .expectStatus().isEqualTo(503)
                 .expectBody()
-                .jsonPath("$.error").isEqualTo(service + "_unavailable")
+                .jsonPath("$.error").isEqualTo(FallbackController.MESSAGES.get(service))
                 .jsonPath("$.timestamp").doesNotExist();
     }
 
     /** fallback 엔드포인트 자체 — 서킷브레이커가 forward하는 내부 대상이라 permitAll이다. */
     @ParameterizedTest
-    @CsvSource({"wiki", "alm", "org", "agent", "migration", "search", "board"})
-    void fallbackEndpointReturnsContract503(String service) {
+    @CsvSource({"wiki", "alm", "org", "agent", "migration", "search"})
+    void fallbackEndpointReturnsKoreanContract503(String service) {
         client().get().uri("/fallback/" + service).exchange()
                 .expectStatus().isEqualTo(503)
                 .expectHeader().contentTypeCompatibleWith("application/json")
-                .expectBody().jsonPath("$.error").isEqualTo(service + "_unavailable");
+                .expectBody().jsonPath("$.error").value(org.hamcrest.Matchers.containsString("일시적으로 연결할 수 없습니다"));
+    }
+
+    /** board는 myFront가 코드로 매핑하는 기존 계약 그대로. */
+    @Test
+    void boardFallbackKeepsLegacyCode() {
+        client().get().uri("/fallback/board").exchange()
+                .expectStatus().isEqualTo(503)
+                .expectBody().jsonPath("$.error").isEqualTo("board_unavailable");
     }
 
     @Test
     void unknownFallbackIsGeneric503() {
         client().post().uri("/fallback/nope").exchange()
                 .expectStatus().isEqualTo(503)
-                .expectBody().jsonPath("$.error").isEqualTo("service_unavailable");
+                .expectBody().jsonPath("$.error").isEqualTo(FallbackController.DEFAULT_MESSAGE);
     }
 }

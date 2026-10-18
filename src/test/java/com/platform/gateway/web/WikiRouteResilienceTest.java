@@ -119,7 +119,7 @@ class WikiRouteResilienceTest {
     void ordinaryPathStillTimesOutToContract503() {
         client().get().uri("/api/wiki/pages/7").exchange()
                 .expectStatus().isEqualTo(503)
-                .expectBody().jsonPath("$.error").isEqualTo("wiki_unavailable");
+                .expectBody().jsonPath("$.error").isEqualTo(FallbackController.MESSAGES.get("wiki"));
     }
 
     @Test
