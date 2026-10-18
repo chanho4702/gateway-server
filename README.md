@@ -37,15 +37,15 @@
   - 인증 필수: `/api/me` · `/api/org/**` · `/api/wiki/**` · `/api/alm/**` · **`/api/search/**`**(GraphQL·재색인 모두) · 그 외 전부
   - **경로 정책은 board-service SecurityConfig와 동기 유지할 것.** `/fallback/**`을 열어 두지 않으면 서킷브레이커가 forward한 내부 요청이 401로 죽는다.
 - **개인 API 토큰(PAT) 교환 — 보안 체인 앞** — 외부 클라이언트(스크립트·CI)가 `Authorization: Bearer chanho_pat_…` 로 기존 API를 부르면, `PatExchangeWebFilter`가 auth-server에서 플랫폼 JWT를 받아 헤더를 갈아끼운다. 다운스트림 서비스는 한 줄도 바뀌지 않는다 — 지금처럼 JWT만 본다(아래 전용 섹션).
-- **X-Forwarded 프록시 처리(trusted-proxies)** — nginx 통합배포처럼 게이트웨이 앞에 리버스 프록시를 두면, SCG 4.1+ 보안 기본값은 신뢰하지 않는 `X-Forwarded-*` 헤더를 제거한다. 그러면 nginx가 붙인 `X-Forwarded-Host`(localhost)가 auth-server에 도달하지 못해 OIDC `redirect_uri`가 eureka IP(:9000)로 구성되고 Keycloak이 거부한다. `trusted-proxies` 정규식으로 루프백 + 사설대역(도커 NAT 포함)을 신뢰하도록 열어 이 문제를 해결한다(아래 전용 섹션 참고).
+- **X-Forwarded 프록시 처리(trusted-proxies)** — nginx 통합배포처럼 게이트웨이 앞에 리버스 프록시를 두면, SCG 4.1+ 보안 기본값은 신뢰하지 않는 `X-Forwarded-*` 헤더를 제거한다. 그러면 nginx가 붙인 `X-Forwarded-Host`(localhost)가 auth-server에 도달하지 못해 OIDC `redirect_uri`가 eureka IP(:9000)로 구성되고 Keycloak이 거부한다. `trusted-proxies` 정규식으로 프록시 주소를 신뢰해 이 문제를 해결한다 — 범위는 프로필별(base 루프백 · dev 사설대역 · docker 도커 브리지 풀/`GATEWAY_TRUSTED_PROXIES`, 아래 전용 섹션 참고).
 - **Rate limiting** — IP 기준. 인증 경로(`/api/auth/**` 5 req/s burst 10, `/oauth2/**`·`/login/**` 10/20)와 **검색 경로(`/api/search/**` 5/15)**. Redis 백엔드, **Redis 부재 시 fail-open**(요청 통과)이라 dev에서 Redis 없이도 동작 — 단 이때 해당 경로 요청마다 `Error calling rate limiter lua` ERROR 로그가 남는 것은 정상. **IP 키는 nginx 1홉 뒤의 실 클라이언트 IP**다 — `RateLimitConfig`가 `XForwardedRemoteAddressResolver.maxTrustedIndex(1)`로 `X-Forwarded-For`의 맨 오른쪽(nginx가 붙인 값)만 채택한다. `getRemoteAddress()`를 그대로 쓰면 nginx/도커 NAT IP 하나로 고정돼 전 클라이언트가 단일 버킷을 공유한다(정상 사용자 상호 차단 + 공격자 격리 불가). 신뢰 홉이 1개라 클라이언트가 XFF를 위조해도 무력하다.
-- **회복탄력성** — 전역 connect 3s/response 10s 타임아웃. board 라우트에 CircuitBreaker(+멱등 GET 한정 Retry 2회, 연결 실패=`IOException`만) → 불능 시 `/fallback/board` 503 `{"error":"board_unavailable"}`. Resilience4j TimeLimiter는 board 인스턴스에 11s로 명시(미설정 시 기본 1s가 정상 응답까지 잘라버림).
-- **요청 로깅 / traceId** — `GlobalFilter`가 매 요청의 `X-Request-Id`를 보장(없거나 형식 불량이면 UUID 재발급)하고 다운스트림으로 전파한 뒤 `METHOD 경로 (requestId)` 한 줄을 로깅한다.
+- **회복탄력성** — 전역 connect 3s/response 10s 타임아웃, 장시간 경로(PDF 내보내기·첨부 업로드/확정·ALM 이슈 가져오기)는 전용 라우트 `wiki-long`/`alm-long`에서 60s. **제품 라우트 전부**(board·org·wiki·alm·agent·migration·search)에 CircuitBreaker(+멱등 GET 한정 Retry 2회, 연결 실패=`IOException`만; search는 Retry 없음) → 불능(연결 실패·응답 타임아웃·회로 열림) 시 `/fallback/<서비스>` 503 `{"error": 한국어 문구}` — board만 기존 코드 `board_unavailable`. 다운스트림이 직접 낸 5xx 본문은 그대로 통과하고 상태코드 재시도는 하지 않는다. TimeLimiter는 board만 11s, 나머지 제품 CB는 꺼서(`disable-time-limiter-map`) 큰 다운로드·느린 정상 응답을 자르지 않는다.
+- **요청 로깅 / traceId** — `WebFilter`(order -102, 보안 체인·PAT 필터보다 앞)가 매 요청의 `X-Request-Id`를 보장(없거나 형식 불량이면 UUID 재발급)하고 다운스트림으로 전파·**응답 헤더로 반환**한 뒤 진입·완료 두 줄을 로깅한다. 401/403·PAT 거부·`/api/platform/**`·fallback 응답도 남는다.
 - **경로 불변(No StripPrefix) — 단 `search` 라우트는 예외** — 원칙은 "클라이언트가 보낸 경로 = 서비스가 받는 경로"다. 서비스 입장에서 게이트웨이 유무에 따라 경로가 달라지지 않는다. **search-service만 `StripPrefix=2`로 접두사를 뗀다** — GraphQL은 단일 URL(`/graphql`)이라 서비스 쪽에 `/api/search` 접두사를 붙일 자리가 없고, 관리 REST도 그에 맞춰 `/admin/reindex`로 통일했기 때문이다(아래 라우팅 표).
 - **서비스 디스커버리 — 라우트마다 다르다(하이브리드)** — 라우트 uri 기본값은 전부 `lb://<서비스명>`이고, 유레카 레지스트리(:8761)에서 인스턴스를 찾아 클라이언트 사이드 로드밸런싱(라운드로빈)한다. 유레카 서버가 잠깐 죽어도 로컬 캐시(30s 갱신)로 라우팅은 유지된다.
   **컨테이너 배포판도 유레카를 쓴다 — 다만 전부는 아니다.** `auth-server`·`board-service`는 컨테이너에서도 유레카에 등록하므로 `lb://`로 찾고(게이트웨이에 `EUREKA_URI`가 주입돼 있다), `org-service`·`search-service`는 `docker` 프로필에서 등록을 끄므로 `ORG_SERVICE_URI`/`SEARCH_SERVICE_URI`로 DNS 직결한다. `wiki-backend`도 `WIKI_SERVICE_URI`로 직결한다. 이 세 env가 빠지면 `lb://` 기본값이 해석될 방법이 없어 해당 경로가 통째로 503이 된다.
 
-**요청 처리 순서:** `PatExchangeWebFilter`(order -101, PAT→JWT 헤더 치환) → Security(CORS 프리플라이트 응답·JWT 검증·401 조기차단, `WebFilterChainProxy` order -100) → `RequestLoggingFilter`(`HIGHEST_PRECEDENCE` GlobalFilter — 401로 잘린 요청은 여기 안 옴) → 라우트 매칭(rate limit·CB 필터) → 다운스트림 프록시.
+**요청 처리 순서:** `RequestLoggingFilter`(order -102, 요청 ID·access log — 아래 모든 거부도 기록) → `PatExchangeWebFilter`(order -101, PAT 형식 검사·IP당 교환 속도 제한·PAT→JWT 헤더 치환) → `PatScopeWebFilter`(-100, PAT 스코프) · Security(CORS 프리플라이트 응답·JWT 검증·401 조기차단, `WebFilterChainProxy` order -100) → 라우트 매칭(rate limit·CB 필터) → 다운스트림 프록시.
 
 ## 기술 스택
 
@@ -110,17 +110,18 @@ Compose는 `EUREKA_URI`와 `ORG_SERVICE_URI`/`WIKI_SERVICE_URI`/`ALM_SERVICE_URI
 | 라우트 id | 경로 패턴 | → 대상 (기본값 / docker env) | 필터 / 비고 |
 |---|---|---|---|
 | `board` | `/api/board/**` | `lb://board-service` (docker도 유레카) | CircuitBreaker(→`/fallback/board`) + GET 한정 Retry 2회 |
+| `wiki-long` · `alm-long` | `/api/wiki/pages/*/export.pdf`·`/api/wiki/pages/*/attachments[/confirm]` · `/api/alm/issues/*/attachments`·`/api/alm/projects/*/issues/import` | `wiki`·`alm`과 같은 대상 | 응답 타임아웃 60s(`metadata.response-timeout`) + 같은 CB/Retry. 일반 라우트보다 먼저 선언 |
 | `auth-oauth2` | `/oauth2/**` | `lb://auth-server` / `AUTH_SERVER_URI` | OIDC 로그인 시작·콜백. RateLimiter 10/20 |
 | `auth-login` | `/login/**` | `lb://auth-server` / `AUTH_SERVER_URI` | OIDC 리다이렉트 흐름. RateLimiter 10/20 |
 | `auth-api` | `/api/auth/**` | `lb://auth-server` / `AUTH_SERVER_URI` | refresh · logout. RateLimiter 5/10 |
 | `auth-jwks` | `/.well-known/**` | `lb://auth-server` / `AUTH_SERVER_URI` | JWKS 공개키. 필터 없음 |
 | `auth-me` | `/api/me` | `lb://auth-server` / `AUTH_SERVER_URI` | 자체 JWT 기반 사용자 정보. RateLimiter 없음(의도 — Security가 무토큰/위조를 이미 401 차단, 브루트포스 표면 아님) |
-| `org` | `/api/org/**` | `lb://org-service` / **docker: `ORG_SERVICE_URI`** | 조직·팀·RBAC. 경로 불변 |
+| `org` | `/api/org/**` | `lb://org-service` / **docker: `ORG_SERVICE_URI`** | 조직·팀·RBAC. 경로 불변. CB(→`/fallback/org`)+GET Retry |
 | `wiki-collaboration` | `/api/wiki/collaboration[/**]` | `ws://localhost:19150` / **docker: `COLLABORATION_SERVICE_URI`** | 1회 ticket 인증 Hocuspocus WebSocket. wiki보다 우선 |
-| `wiki` | `/api/wiki/**` | `lb://wiki-backend` / **docker: `WIKI_SERVICE_URI`** | 스페이스·페이지·첨부. 경로 불변 |
-| `alm` | `/api/alm/**` | `lb://alm-backend` / **docker: `ALM_SERVICE_URI`** | 프로젝트·이슈. 경로 불변 |
-| `agent` | `/api/agent/**` | `lb://agent-service` / **docker: `AGENT_SERVICE_URI`** | 에이전트 REST·MCP. 경로 불변. `/api/agent/mcp/**`만 게이트웨이 permitAll(서비스가 자체 인증) |
-| `search` | `/api/search/**` | **`SEARCH_MODE`가 정한다** — `lite`(기본) → `lb://wiki-backend` / `opensearch`·`external` → `http://search-service:9140` | **`StripPrefix=2`** + RateLimiter 5/15. 아래 "설치 옵션 — 검색" 참조 |
+| `wiki` | `/api/wiki/**` | `lb://wiki-backend` (**docker도 유레카** — 노드 N개 분산, `WIKI_SERVICE_URI`는 탈출구) | 스페이스·페이지·첨부. 경로 불변. CB(→`/fallback/wiki`)+GET Retry |
+| `alm` | `/api/alm/**` | `lb://alm-backend` / **docker: `ALM_SERVICE_URI`** | 프로젝트·이슈. 경로 불변. CB(→`/fallback/alm`)+GET Retry |
+| `agent` | `/api/agent/**` | `lb://agent-service` / **docker: `AGENT_SERVICE_URI`** | 에이전트 REST·MCP. 경로 불변. `/api/agent/mcp/**`만 게이트웨이 permitAll(서비스가 자체 인증). CB(→`/fallback/agent`)+GET Retry. 사무실 SSE(`agent-office-stream`)는 CB 없음 |
+| `search` | `/api/search/**` | **`SEARCH_MODE`가 정한다** — `lite`(기본) → `lb://wiki-backend` / `opensearch`·`external` → `http://search-service:9140` | **`StripPrefix=2`** + CB(→`/fallback/search`) + RateLimiter 5/15. 아래 "설치 옵션 — 검색" 참조 |
 
 ### `search` 라우트의 StripPrefix=2 (No StripPrefix 원칙의 유일한 예외)
 
@@ -219,13 +220,13 @@ search-service는 갖지 않는다 — GraphQL이 단일 URL이라 접두사를 
 
 **게이트웨이는 제품 서비스를 `depends_on`에 두지 않는다** — 게이트웨이가 org·wiki·alm·search의 기동을 기다리면 단일 진입점이 그 서비스와 함께 죽는다. 다운스트림 부재는 라우트 단위 5xx로 격리되는 것이 설계다.
 
-> `trusted-proxies`는 env가 아니라 `application.yml`에 정규식으로 하드코딩돼 있다(dev 전용). nginx/프록시 토폴로지가 바뀌면 yml을 직접 고친다 — 아래 섹션 참고.
+> `trusted-proxies`는 프로필별 yml에 있다. docker에서만 `GATEWAY_TRUSTED_PROXIES`(정규식 원문)로 덮을 수 있다 — 아래 섹션 참고.
 
 ---
 
 ## X-Forwarded 프록시 처리 (trusted-proxies)
 
-`application.yml`의 `spring.cloud.gateway.server.webflux.trusted-proxies` (정규식).
+`spring.cloud.gateway.server.webflux.trusted-proxies` (정규식, 원격 주소 문자열 전체와 대조). **프로필마다 다르다**(2026-10-18 P-23 — 예전에는 base에 사설대역 전체가 있어 docker에도 적용됐다).
 
 SCG 4.1+는 보안상 **신뢰하지 않는 소스의 `X-Forwarded-*` 헤더를 제거**하는 것이 기본값이다. nginx 통합배포(단일 오리진 `http://localhost` 뒤에 프론트 3앱 + 게이트웨이)에서는 nginx가 `X-Forwarded-Host: localhost`를 붙여 게이트웨이로 넘기는데, 이 헤더가 신뢰되지 않고 제거되면:
 
@@ -233,13 +234,17 @@ SCG 4.1+는 보안상 **신뢰하지 않는 소스의 `X-Forwarded-*` 헤더를 
 - 그 값이 auth-server에 전달되어 OIDC `redirect_uri`가 브라우저가 아는 `http://localhost`가 아니라 내부 IP로 생성됨.
 - **Keycloak이 등록되지 않은 redirect_uri라며 로그인을 거부.**
 
-이를 막기 위해 루프백 + 사설대역(도커 NAT 포함)을 신뢰하도록 정규식을 열어 둔다:
+이를 막기 위해 프록시 주소를 신뢰한다:
 
-```
-trusted-proxies: "127\.0\.0\.1|::1|0:0:0:0:0:0:0:1|10\..*|172\.(1[6-9]|2[0-9]|3[01])\..*|192\.168\..*"
-```
+| 프로필 | 신뢰 범위 | 파일 |
+|---|---|---|
+| 없음(base) | 루프백만 — 같은 호스트의 프록시(vite·로컬 nginx) | `application.yml` |
+| `dev` | 루프백 + 사설대역 전체(도커 NAT로 호스트 dev 게이트웨이에 붙는 경우 포함) | `application-dev.yml` |
+| `docker` | 도커 기본 브리지 주소 풀 `172.16/12`·`192.168/16`(루프백·10/8 제외). `GATEWAY_TRUSTED_PROXIES`로 덮는다 | `application-docker.yml` |
 
-> **dev 전용.** 운영에서는 실제 프록시(nginx) IP만 좁게 신뢰해야 한다. 이 사설대역 전체 허용은 로컬/도커 개발 편의를 위한 것이다. (이 문제는 SCG `trusted-proxies` 미설정과 stale Keycloak realm 2중 원인으로 나타났던 redirect_uri 거부의 게이트웨이 측 원인.)
+compose 기본망 서브넷은 도커가 그 풀에서 동적으로 배정하므로(실측 `platform_default` = 172.22.0.0/16, nginx 172.22.0.26) 게이트웨이 혼자서는 nginx 주소를 특정할 수 없다. **nginx 하나만 믿으려면** compose에 기본망 서브넷과 nginx `ipv4_address`를 고정하고 `GATEWAY_TRUSTED_PROXIES=172\.30\.0\.10`처럼 그 IP를 준다(운영 후속). nginx를 빠뜨리면 로그인 redirect_uri가 깨지니 바꾼 뒤 로그인을 확인한다.
+
+이 값은 `X-Forwarded-*`를 다운스트림에 넘길지만 정한다 — rate limit 키(XFF 맨 오른쪽 1홉, `RateLimitConfig`)는 신뢰 범위와 무관하다(`TrustedProxiesForwardingTest`가 프로필별로 고정). (이 문제는 SCG `trusted-proxies` 미설정과 stale Keycloak realm 2중 원인으로 나타났던 redirect_uri 거부의 게이트웨이 측 원인.)
 
 ---
 
@@ -254,7 +259,9 @@ trusted-proxies: "127\.0\.0\.1|::1|0:0:0:0:0:0:0:1|10\..*|172\.(1[6-9]|2[0-9]|3[
 1. `Authorization: Bearer chanho_pat_…`(스킴 대소문자 무시)일 때만 개입한다. 일반 JWT Bearer·헤더 없는 요청은 **손대지 않고** 통과시킨다.
    - **접두사가 유일한 판별 기준이다.** agent-service는 `/api/agent/mcp/**` 로 자기 PAT(`agp_…`)를 받아 스스로 검증하는데, 게이트웨이가 그걸 교환 대상으로 착각해 헤더를 갈아끼우면 그쪽 인증이 통째로 깨진다. `chanho_pat_` 이외의 Bearer는 원문 그대로 흘려보내며 `PatExchangeWebFilterTest`가 이 케이스를 고정한다.
 2. 캐시(Caffeine, 키 = `hex(sha256(원문토큰))`) 조회 → 히트면 헤더를 `Bearer <jwt>`로 치환하고 체인 계속.
-3. 미스면 `POST {AUTH_SERVER_BASE_URI}/internal/pat/exchange`(헤더 `X-Internal-Secret`, 본문 `{"token":"…"}`), 타임아웃 **2s**.
+   - **형식 사전검증** — `chanho_pat_` + base64url 43자(auth-server가 발급하는 유일한 형식)가 아니면 교환 없이 **401** `invalid_token`. 무작위 쓰레기 토큰이 auth-server·authdb까지 가지 않는다(P-08).
+3. 미스면 먼저 **IP당 속도 제한**(라우트와 같은 `RedisRateLimiter` 빈의 가상 라우트 `pat-exchange`, `ipKeyResolver`, 기본 10/s·burst 20 — `PAT_EXCHANGE_RATE`/`PAT_EXCHANGE_BURST`). 초과면 **429** `{"error":"rate_limited"}`. 형식은 맞지만 없는 무작위 토큰은 해시가 매번 달라 부정 캐시로 못 막으므로 여기서 잘린다. 캐시 히트는 제한하지 않는다. Redis 부재 시 fail-open(다른 라우트와 같음).
+4. 통과하면 `POST {AUTH_SERVER_BASE_URI}/internal/pat/exchange`(헤더 `X-Internal-Secret`, 본문 `{"token":"…"}`), 타임아웃 **2s**.
 
 | auth-server 응답 | 게이트웨이 | 캐시 |
 |---|---|---|
@@ -274,16 +281,26 @@ trusted-proxies: "127\.0\.0\.1|::1|0:0:0:0:0:0:0:1|10\..*|172\.(1[6-9]|2[0-9]|3[
 
 **CORS 주의**: 이 필터는 Security의 CORS 처리보다 앞이라 필터가 직접 쓰는 401/503 응답에는 CORS 헤더가 붙지 않는다. PAT는 스크립트·CI용이고 브라우저(myFront)는 세션 JWT를 쓰므로 실사용 영향은 없다. 브라우저에서 PAT를 직접 쓰게 되면 이 지점을 먼저 손봐야 한다.
 
+### PAT 스코프 — `PatScopeWebFilter` / `PatScopeRules`
+
+교환된 JWT(`provider=PAT`)의 `scope` 클레임으로 경로·메서드를 판정한다(정본 표는 `PatScopeRules` 클래스 주석과 `PatScopeRulesTest`). 요점:
+
+- 제품 경로는 `<제품>:read`(GET·HEAD·OPTIONS) / `<제품>:write`, 검색은 메서드 무관 `search:read`, `/api/migration/**`·`/api/agent/**`는 `admin`, `/api/platform/**`과 표에 없는 `/api/**`는 PAT 금지.
+- **`admin`은 `/api/<제품>/admin/**`만이 아니다**(P-03). 관리 경로 표: org `grants/**`·`invitations/**`·`settings/**`(메서드 무관), `members/*` 쓰기·`members/*/approve`·`members/agents`·`members/*/avatar` 쓰기·`members/pending`·`members/*/events`, `teams/**` 쓰기 / wiki `pages/*/restrictions` 쓰기·스페이스 삭제·휴지통 비우기·`pages/*/purge` / alm `settings/**` 쓰기·`projects/*/settings/**` 쓰기·프로젝트 삭제·`projects/*/permanent`. 서비스에 관리 API를 새로 만들면 `/api/<제품>/admin/**` 아래에 두는 것이 원칙이고, 아니면 이 표와 테스트에 같이 더한다.
+- 경로는 다운스트림처럼 정리(`;매트릭스` 제거·퍼센트 디코딩·소문자·빈 세그먼트/`.`/`..` 처리)한 뒤 판정한다 — 표기 변형으로 우회할 수 없다.
+- `scope` 클레임이 없는 PAT JWT는 빈 스코프(= `/api/me`만)다(P-21). auth-server는 모든 교환 JWT에 이 클레임을 싣는다.
+
 ---
 
 ## 요청 로깅 / X-Request-Id
 
-`filter/RequestLoggingFilter.java` — `GlobalFilter` 구현체 (최고 우선순위, `Ordered.HIGHEST_PRECEDENCE`).
+`filter/RequestLoggingFilter.java` — 순수 `WebFilter`, **`@Order(-102)`**(PAT 필터 -101·보안 체인 -100보다 앞). GlobalFilter였을 때는 보안 체인·PAT 필터가 끊은 401/403/503과 라우트가 아닌 컨트롤러(`/api/platform/**`, `/fallback/**`) 응답이 로그에 없었다(P-12).
 
 동작 순서:
 1. 요청 헤더에 `X-Request-Id`가 없거나 **형식이 안전하지 않으면**(허용: `[A-Za-z0-9._-]{1,64}`, 로그 인젝션 방지) UUID를 생성. 안전한 값이면 그대로 사용.
 2. `headers.set()`으로 다운스트림 요청에 주입 — append가 아니라 **set**이므로 헤더가 항상 정확히 1개다(클라이언트가 보낸 값과 중복되지 않음).
-3. `INFO: METHOD /경로 (requestId)` 한 줄 로깅.
+3. 응답 커밋 직전 같은 ID를 **응답 헤더 `X-Request-Id`**로 set — 사용자가 오류 화면에서 요청 ID를 보고할 수 있다(다운스트림이 돌려줘도 값은 하나).
+4. 진입 `METHOD /경로 (requestId)` + 완료 `METHOD /경로 -> status latencyMs (requestId)` 두 줄 로깅.
 
 같은 `X-Request-Id`가 게이트웨이 로그와 다운스트림 서비스 로그에 함께 남아 요청을 추적할 수 있다. Zipkin/Tempo 백엔드 연동은 아래 확장 포인트 참고.
 
@@ -293,11 +310,11 @@ trusted-proxies: "127\.0\.0\.1|::1|0:0:0:0:0:0:0:1|10\..*|172\.(1[6-9]|2[0-9]|3[
 
 `SecurityConfig`의 `CorsConfigurationSource` 빈이 **단일 소스**다(yml `globalcors` 아님 — Security의 401 응답에도 CORS 헤더가 붙어야 프론트의 401→refresh 흐름이 살기 때문).
 
-- `allowedOrigins`: `${platform.cors-allowed-origin}` = `${CORS_ALLOWED_ORIGIN:http://localhost:5173}`
-- `allowedMethods`: `GET, POST, PUT, DELETE, OPTIONS`
+- `allowedOrigins`: `${platform.cors-allowed-origin}` = `${CORS_ALLOWED_ORIGIN:http://localhost:5173}` — **쉼표 목록 허용**(예: `http://localhost:5173,http://localhost:5174`)
+- `allowedMethods`: `GET, POST, PUT, PATCH, DELETE, OPTIONS` — PATCH는 org(Grant·Member·Team)·agent(Persona)가 쓴다
 - `allowedHeaders`: `*` / `allowCredentials`: `true` (RT 쿠키) / `maxAge`: 3600
 
-`allowCredentials: true` 인 이상 `allowedOrigins: "*"` 는 스펙상 불가 — 오리진을 반드시 명시해야 한다. 다중 오리진이 필요해지면 콤마 구분 리스트로 확장한다.
+`allowCredentials: true` 인 이상 `allowedOrigins: "*"` 는 스펙상 불가 — 오리진을 반드시 명시해야 한다.
 
 auth-server와 board-service는 더 이상 CORS를 설정하지 않는다. 게이트웨이를 우회한 직접 호출은 내부망 전제이므로 CORS 처리 불필요.
 
@@ -350,9 +367,9 @@ src/main/java/com/platform/gateway/
 │  ├─ RateLimitConfig.java          ipKeyResolver 빈 (rate limit 키 = 클라이언트 IP)
 │  └─ SecurityConfig.java           JWT 조기차단 보안체인 + JWKS 디코더 + CORS 단일 소스
 ├─ security/AudienceValidator.java  aud 클레임 검증 (board-service와 동일 패턴)
-├─ web/FallbackController.java      /fallback/board → 503
+├─ web/FallbackController.java      /fallback/{service} → 503 {"error"}
 └─ filter/
-   ├─ RequestLoggingFilter.java   GlobalFilter: X-Request-Id 검증/재발급 + 요청 1줄 로깅
+   ├─ RequestLoggingFilter.java   WebFilter(-102): X-Request-Id 검증/재발급·응답 반환 + access log
    ├─ PatExchangeWebFilter.java   WebFilter(order -101): PAT→JWT 헤더 치환 + Caffeine 캐시
    ├─ PatExchangeClient.java      auth-server /internal/pat/exchange 호출(2s 타임아웃)
    └─ PatExchangeResult.java      성공/무효/불능 3분기 sealed 결과
