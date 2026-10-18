@@ -120,6 +120,17 @@ spring:
               uri: ${ORG_SERVICE_URI:lb://org-service}
               predicates:
                 - Path=/api/org/**
+              filters:
+                - name: CircuitBreaker
+                  args:
+                    name: org
+                    fallbackUri: forward:/fallback/org
+                - name: Retry
+                  args:
+                    retries: 2
+                    methods: GET
+                    series: ""   # 상태코드 재시도 없음 — 다운스트림 5xx(예: org 불능 503)에 부하를 3배로 얹지 않는다
+                    exceptions: java.io.IOException
             # collaboration-service — Hocuspocus WebSocket. Access Token 대신 wiki-backend가 발급한
             # 1회 ticket을 Hocuspocus 인증 메시지로 검증하므로 Gateway JWT 필터는 이 경로만 예외다.
             # 일반 wiki catch-all보다 먼저/낮은 order로 고정하지 않으면 lb://wiki-backend로 잘못 간다.
@@ -135,16 +146,75 @@ spring:
               order: -1
               predicates:
                 - Path=/api/wiki/collaboration,/api/wiki/collaboration/**
-            # wiki-backend — 위키 REST (Wave B). dev: lb:// · docker: WIKI_SERVICE_URI DNS 직결
+            # 장시간 요청 — 전역 response-timeout(10s)이 큰 문서 PDF 생성·20MB 첨부 저장을 504로 자르던 경로만
+            # 라우트별로 60s(P-10). 실제 경로는 wiki-backend PdfExportController·AttachmentController,
+            # alm-backend AttachmentController·IssueController(import)에서 옮겼다. 아래 wiki/alm보다 먼저 와야 매칭된다.
+            - id: wiki-long
+              uri: ${WIKI_SERVICE_URI:lb://wiki-backend}
+              predicates:
+                - Path=/api/wiki/pages/*/export.pdf,/api/wiki/pages/*/attachments,/api/wiki/pages/*/attachments/confirm
+              metadata:
+                response-timeout: 60000
+              filters:
+                - name: CircuitBreaker
+                  args:
+                    name: wiki
+                    fallbackUri: forward:/fallback/wiki
+                - name: Retry
+                  args:
+                    retries: 2
+                    methods: GET
+                    series: ""   # 상태코드 재시도 없음 — 다운스트림 5xx(예: org 불능 503)에 부하를 3배로 얹지 않는다
+                    exceptions: java.io.IOException
+            # wiki-backend — 위키 REST (Wave B). dev: lb:// · docker: 기본 lb://wiki-backend(Eureka, 노드 N개 분산)
             - id: wiki
               uri: ${WIKI_SERVICE_URI:lb://wiki-backend}
               predicates:
                 - Path=/api/wiki/**
+              filters:
+                - name: CircuitBreaker
+                  args:
+                    name: wiki
+                    fallbackUri: forward:/fallback/wiki
+                - name: Retry
+                  args:
+                    retries: 2
+                    methods: GET
+                    series: ""   # 상태코드 재시도 없음 — 다운스트림 5xx(예: org 불능 503)에 부하를 3배로 얹지 않는다
+                    exceptions: java.io.IOException
+            - id: alm-long
+              uri: ${ALM_SERVICE_URI:lb://alm-backend}
+              predicates:
+                - Path=/api/alm/issues/*/attachments,/api/alm/projects/*/issues/import
+              metadata:
+                response-timeout: 60000
+              filters:
+                - name: CircuitBreaker
+                  args:
+                    name: alm
+                    fallbackUri: forward:/fallback/alm
+                - name: Retry
+                  args:
+                    retries: 2
+                    methods: GET
+                    series: ""   # 상태코드 재시도 없음 — 다운스트림 5xx(예: org 불능 503)에 부하를 3배로 얹지 않는다
+                    exceptions: java.io.IOException
             # alm-backend — 프로젝트·이슈 REST (Wave D). 컨트롤러가 /api/alm 접두사를 소유한다.
             - id: alm
               uri: ${ALM_SERVICE_URI:lb://alm-backend}
               predicates:
                 - Path=/api/alm/**
+              filters:
+                - name: CircuitBreaker
+                  args:
+                    name: alm
+                    fallbackUri: forward:/fallback/alm
+                - name: Retry
+                  args:
+                    retries: 2
+                    methods: GET
+                    series: ""   # 상태코드 재시도 없음 — 다운스트림 5xx(예: org 불능 503)에 부하를 3배로 얹지 않는다
+                    exceptions: java.io.IOException
             # agent-service — 에이전트 REST. 컨트롤러가 /api/agent 접두사를 소유한다(StripPrefix 없음).
             # dev/기본: lb://(Eureka) · docker: AGENT_SERVICE_URI DNS 직결 — org/alm과 동일 분기.
             # 사무실 실시간 스트림(SSE, agent-service AGP-57) — 전역 response-timeout 10s는 "읽기 사이 최대 간격"이라
@@ -159,12 +229,34 @@ spring:
               uri: ${AGENT_SERVICE_URI:lb://agent-service}
               predicates:
                 - Path=/api/agent/**
+              filters:
+                - name: CircuitBreaker
+                  args:
+                    name: agent
+                    fallbackUri: forward:/fallback/agent
+                - name: Retry
+                  args:
+                    retries: 2
+                    methods: GET
+                    series: ""   # 상태코드 재시도 없음 — 다운스트림 5xx(예: org 불능 503)에 부하를 3배로 얹지 않는다
+                    exceptions: java.io.IOException
             # migration-service — 컨플루언스 DC·노션 이관 REST(위키 밖 별도 모듈). 컨트롤러가 /api/migration 접두사를 소유한다.
             # 위키 내부 import API(/internal/wiki/import/**)는 라우팅하지 않는다 — 내부망 + X-Internal-Token 전용.
             - id: migration
               uri: ${MIGRATION_SERVICE_URI:lb://migration-service}
               predicates:
                 - Path=/api/migration/**
+              filters:
+                - name: CircuitBreaker
+                  args:
+                    name: migration
+                    fallbackUri: forward:/fallback/migration
+                - name: Retry
+                  args:
+                    retries: 2
+                    methods: GET
+                    series: ""   # 상태코드 재시도 없음 — 다운스트림 5xx(예: org 불능 503)에 부하를 3배로 얹지 않는다
+                    exceptions: java.io.IOException
             # search-service — 통합 검색 GraphQL + 재색인 관리 REST (Wave C).
             #
             # **대상은 SEARCH_MODE 하나에서 파생한다**(설치 옵션, 설계 §2.1 A안). 스위치를 두 곳에
@@ -202,6 +294,10 @@ spring:
                 - Path=/api/search/**
               filters:
                 - StripPrefix=2
+                - name: CircuitBreaker
+                  args:
+                    name: search
+                    fallbackUri: forward:/fallback/search
                 - name: RequestRateLimiter
                   args:
                     redis-rate-limiter.replenishRate: 5
@@ -216,6 +312,18 @@ eureka:
     # Windows/사설망에서 DESKTOP-xxx.mshome.net 같은 DNS 해석 불가 호스트명으로 등록되면
     # lb:// 해석이 UnknownHostException으로 죽는다 — IP로 등록 (E2E에서 실측).
     prefer-ip-address: true
+
+# 제품 라우트(P-10)의 CircuitBreaker는 TimeLimiter를 끈다. TimeLimiter는 "응답 전체를 다 쓸 때까지"의 상한이라
+# 큰 첨부 다운로드·PDF처럼 바이트가 계속 흐르는 정상 응답도 자른다. 한도는 httpclient response-timeout
+# (전역 10s, 장시간 라우트 60s)이 맡고, CB는 연결 실패·응답 타임아웃을 계약 503으로 바꾸고 회로를 여는 일만 한다.
+# board는 기존 설정(TimeLimiter 11s) 유지.
+spring.cloud.circuitbreaker.resilience4j.disable-time-limiter-map:
+  wiki: true
+  alm: true
+  org: true
+  agent: true
+  migration: true
+  search: true
 
 resilience4j:
   timelimiter:

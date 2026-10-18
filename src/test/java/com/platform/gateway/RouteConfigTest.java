@@ -135,4 +135,33 @@ class RouteConfigTest {
         var search = routes.stream().filter(r -> r.getId().equals("search")).findFirst().orElseThrow();
         assertThat(search.getFilters().toString()).contains("RequestRateLimiter");
     }
+
+    /**
+     * 장시간 라우트(P-10)는 일반 라우트보다 먼저 매칭돼야 하고(선언 순서 = 매칭 순서), 대상은 일반 라우트와 같아야 한다 —
+     * 다르면 docker에서 PDF·첨부만 엉뚱한 노드/주소로 간다.
+     */
+    @Test
+    void longRunningRoutesPrecedeAndMirrorTheirProductRoute() {
+        List<org.springframework.cloud.gateway.route.Route> routes =
+                routeLocator.getRoutes().collectList().block();
+        List<String> ids = routes.stream().map(r -> r.getId()).toList();
+        for (String[] pair : new String[][]{{"wiki-long", "wiki"}, {"alm-long", "alm"}}) {
+            var longRoute = routes.get(ids.indexOf(pair[0]));
+            var product = routes.get(ids.indexOf(pair[1]));
+            assertThat(ids.indexOf(pair[0])).as(pair[0] + "가 " + pair[1] + "보다 먼저").isLessThan(ids.indexOf(pair[1]));
+            assertThat(longRoute.getUri()).isEqualTo(product.getUri());
+            assertThat(longRoute.getMetadata().get("response-timeout")).isEqualTo(60000);
+        }
+    }
+
+    /** board 외 제품 라우트에도 CircuitBreaker(fallback 계약 503)가 있어야 한다(P-10). */
+    @Test
+    void productRoutesHaveCircuitBreaker() {
+        List<org.springframework.cloud.gateway.route.Route> routes =
+                routeLocator.getRoutes().collectList().block();
+        for (String id : List.of("board", "org", "wiki", "wiki-long", "alm", "alm-long", "agent", "migration", "search")) {
+            var route = routes.stream().filter(r -> r.getId().equals(id)).findFirst().orElseThrow();
+            assertThat(route.getFilters().toString()).as("route %s에 CircuitBreaker", id).contains("CircuitBreaker");
+        }
+    }
 }
