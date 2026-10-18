@@ -25,6 +25,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.HexFormat;
 import java.util.Locale;
+import java.util.regex.Pattern;
 
 /**
  * 개인 API 토큰(PAT)을 플랫폼 JWT로 바꿔치기하는 필터.
@@ -46,6 +47,11 @@ public class PatExchangeWebFilter implements WebFilter {
     public static final int ORDER = -101;
 
     static final String PAT_PREFIX = "chanho_pat_";
+    /**
+     * auth-server가 발급하는 유일한 형식 — {@code chanho_pat_} + base64url(32바이트, 패딩 없음) 43자
+     * ({@code PersonalAccessTokenService.generateRawToken}). 이 밖의 값은 교환을 시도하지 않고 401이다(P-08).
+     */
+    private static final Pattern PAT_FORMAT = Pattern.compile("chanho_pat_[A-Za-z0-9_-]{43}");
     private static final String BEARER = "bearer ";
     private static final Duration POSITIVE_TTL = Duration.ofSeconds(60);
     private static final Duration INVALID_TTL = Duration.ofSeconds(10);
@@ -62,17 +68,23 @@ public class PatExchangeWebFilter implements WebFilter {
     private static final Logger log = LoggerFactory.getLogger(PatExchangeWebFilter.class);
 
     private final PatExchangeClient client;
+    private final PatExchangeRateLimiter rateLimiter;
     private final Cache<String, CacheEntry> cache;
 
-    // 생성자가 둘이면 스프링은 기본 생성자를 찾다가 기동에 실패한다 — 주입 대상을 명시한다.
+    // 생성자가 여럿이면 스프링은 기본 생성자를 찾다가 기동에 실패한다 — 주입 대상을 명시한다.
     @Autowired
-    public PatExchangeWebFilter(PatExchangeClient client) {
-        this(client, Ticker.systemTicker());
+    public PatExchangeWebFilter(PatExchangeClient client, PatExchangeRateLimiter rateLimiter) {
+        this(client, Ticker.systemTicker(), rateLimiter);
     }
 
-    /** 테스트용 — 가짜 Ticker로 캐시 만료를 실시간 대기 없이 앞당긴다. */
+    /** 테스트용 — 가짜 Ticker로 캐시 만료를 실시간 대기 없이 앞당긴다. 속도 제한 없음. */
     PatExchangeWebFilter(PatExchangeClient client, Ticker ticker) {
+        this(client, ticker, PatExchangeRateLimiter.UNLIMITED);
+    }
+
+    PatExchangeWebFilter(PatExchangeClient client, Ticker ticker, PatExchangeRateLimiter rateLimiter) {
         this.client = client;
+        this.rateLimiter = rateLimiter;
         this.cache = Caffeine.newBuilder()
                 .maximumSize(MAX_ENTRIES)
                 .ticker(ticker)
@@ -105,6 +117,12 @@ public class PatExchangeWebFilter implements WebFilter {
             return chain.filter(exchange); // PAT가 아닌 Bearer(JWT)·무헤더는 손대지 않는다
         }
 
+        if (!PAT_FORMAT.matcher(rawToken).matches()) {
+            // 발급된 적 없는 형식 — auth-server·DB까지 보내지 않는다(무작위 쓰레기 토큰 증폭 차단, P-08).
+            log.debug("PAT 형식 불일치 — 교환 없이 거부");
+            return unauthorized(exchange);
+        }
+
         String key = sha256Hex(rawToken);
         if (!client.isEnabled()) {
             // 비밀 미설정 = 교환 불가. 열어주는 대신 닫는다(fail-closed).
@@ -123,6 +141,21 @@ public class PatExchangeWebFilter implements WebFilter {
             };
         }
 
+        // 캐시 미스만 auth-server를 부른다 — 그 직전에만 IP당 속도 제한을 건다(P-08). 형식은 맞지만 존재하지 않는
+        // 무작위 토큰은 해시가 매번 달라 부정 캐시로는 막을 수 없으므로 여기서 잘린다.
+        return rateLimiter.tryAcquire(exchange)
+                .defaultIfEmpty(true)
+                .flatMap(allowed -> allowed
+                        ? exchangeAndCache(exchange, chain, rawToken, key)
+                        : rateLimited(exchange, key));
+    }
+
+    private Mono<Void> rateLimited(ServerWebExchange exchange, String key) {
+        log.warn("PAT 교환 속도 제한 초과 tokenHash={}", hint(key));
+        return writeError(exchange, HttpStatus.TOO_MANY_REQUESTS, "rate_limited");
+    }
+
+    private Mono<Void> exchangeAndCache(ServerWebExchange exchange, WebFilterChain chain, String rawToken, String key) {
         return client.exchange(rawToken).flatMap(result -> switch (result) {
             case PatExchangeResult.Success s -> {
                 cache.put(key, CacheEntry.success(s.accessToken(),

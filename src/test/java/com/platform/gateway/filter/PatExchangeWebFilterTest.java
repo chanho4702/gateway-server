@@ -12,9 +12,11 @@ import org.springframework.http.HttpStatus;
 import org.springframework.test.web.reactive.server.WebTestClient;
 import org.springframework.web.reactive.function.client.WebClient;
 import org.springframework.web.server.WebHandler;
+import reactor.core.publisher.Mono;
 
 import java.time.Duration;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -340,4 +342,93 @@ class PatExchangeWebFilterTest {
         assertThat(PatExchangeWebFilter.extractPatToken(PAT)).isNull(); // 스킴 없음
     }
 
+
+    // --- 증폭 방어(P-08) -------------------------------------------------------
+
+    private WebTestClient clientWithLimiter(PatExchangeRateLimiter limiter) {
+        PatExchangeClient exchangeClient = new PatExchangeClient(
+                WebClient.builder(), authServer.url("/").toString(), "test-internal-secret", Duration.ofSeconds(15));
+        WebHandler downstream = exchange -> {
+            downstreamCalled.set(true);
+            exchange.getResponse().setStatusCode(HttpStatus.OK);
+            return exchange.getResponse().setComplete();
+        };
+        return WebTestClient.bindToWebHandler(downstream)
+                .webFilter(new PatExchangeWebFilter(exchangeClient, ticker, limiter))
+                .configureClient()
+                .responseTimeout(Duration.ofSeconds(20))
+                .build();
+    }
+
+    /**
+     * auth-server가 발급하는 형식은 하나뿐이다({@code chanho_pat_} + base64url 43자). 그 밖의 값은
+     * auth-server·DB까지 보내지 않고 바로 401 — 무작위 쓰레기 토큰이 매 요청 교환을 일으키지 못한다.
+     */
+    @Test
+    void malformedPatIsRejectedWithoutCallingAuthServer() {
+        for (String bad : new String[]{
+                "chanho_pat_short",
+                "chanho_pat_" + "A".repeat(42),
+                "chanho_pat_" + "A".repeat(44),
+                "chanho_pat_" + "A".repeat(42) + "=",
+                "chanho_pat_" + "A".repeat(42) + "!"}) {
+            downstreamCalled.set(false);
+            client().get().uri("/api/wiki/pages")
+                    .header(HttpHeaders.AUTHORIZATION, "Bearer " + bad)
+                    .exchange()
+                    .expectStatus().isUnauthorized()
+                    .expectBody().jsonPath("$.error").isEqualTo("invalid_token");
+            assertThat(downstreamCalled.get()).as(bad).isFalse();
+        }
+        assertThat(authServer.getRequestCount()).isZero();
+    }
+
+    @Test
+    void wellFormedPatWithDashAndUnderscoreIsExchanged() {
+        authServer.enqueue(exchangeOk(JWT, 300));
+        client().get().uri("/api/me")
+                .header(HttpHeaders.AUTHORIZATION, "Bearer chanho_pat_" + "a-_Z9".repeat(8) + "abc")
+                .exchange()
+                .expectStatus().isOk();
+        assertThat(authServer.getRequestCount()).isEqualTo(1);
+    }
+
+    /** 캐시 미스가 속도 제한에 걸리면 auth-server를 부르지 않고 429. */
+    @Test
+    void rateLimitedCacheMissReturns429WithoutCallingAuthServer() {
+        clientWithLimiter(exchange -> Mono.just(false)).get().uri("/api/wiki/pages")
+                .header(HttpHeaders.AUTHORIZATION, "Bearer " + PAT)
+                .exchange()
+                .expectStatus().isEqualTo(HttpStatus.TOO_MANY_REQUESTS)
+                .expectBody().jsonPath("$.error").isEqualTo("rate_limited");
+        assertThat(authServer.getRequestCount()).isZero();
+        assertThat(downstreamCalled.get()).isFalse();
+    }
+
+    /** 캐시 히트는 auth-server를 때리지 않으므로 제한 대상이 아니다 — 정상 토큰의 연속 호출은 막지 않는다. */
+    @Test
+    void cacheHitsDoNotConsumeRateLimit() {
+        AtomicInteger asked = new AtomicInteger();
+        WebTestClient client = clientWithLimiter(exchange -> Mono.just(asked.incrementAndGet() <= 1));
+        authServer.enqueue(exchangeOk(JWT, 300));
+        for (int i = 0; i < 3; i++) {
+            client.get().uri("/api/wiki/pages")
+                    .header(HttpHeaders.AUTHORIZATION, "Bearer " + PAT)
+                    .exchange()
+                    .expectStatus().isOk();
+        }
+        assertThat(asked.get()).isEqualTo(1);
+        assertThat(authServer.getRequestCount()).isEqualTo(1);
+    }
+
+    /** 부정 캐시 히트도 제한을 소모하지 않는다 — 401은 캐시에서 바로 나간다. */
+    @Test
+    void malformedTokenDoesNotConsumeRateLimit() {
+        AtomicInteger asked = new AtomicInteger();
+        clientWithLimiter(exchange -> Mono.just(asked.incrementAndGet() > 0)).get().uri("/api/wiki/pages")
+                .header(HttpHeaders.AUTHORIZATION, "Bearer chanho_pat_x")
+                .exchange()
+                .expectStatus().isUnauthorized();
+        assertThat(asked.get()).isZero();
+    }
 }

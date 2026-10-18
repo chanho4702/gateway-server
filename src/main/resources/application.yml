@@ -253,6 +253,12 @@ platform:
   # internal-secret이 비어 있으면 PAT 요청을 전부 401로 거부한다(fail-closed) — 열어두지 않는다.
   auth-server-base-uri: ${AUTH_SERVER_BASE_URI:http://localhost:9000}
   internal-secret: ${AGENT_INTERNAL_SECRET:}
+  pat-exchange:
+    # PAT 교환(auth-server 호출) 직전의 IP당 토큰버킷(P-08) — 캐시 미스에만 적용, 초과 시 429 {"error":"rate_limited"}.
+    # 라우트 rate limiter와 같은 Redis 빈을 쓰므로 Redis 부재 시 fail-open도 같다.
+    rate-limit:
+      replenish-rate: ${PAT_EXCHANGE_RATE:10}
+      burst-capacity: ${PAT_EXCHANGE_BURST:20}
   # 관리자 판정(/api/platform/**) — org-service `GET /api/org/me`의 globalRoles에 ADMIN이 있는지.
   # 라우트용 ORG_SERVICE_URI(lb:// 가능)와 달리 여기는 항상 http 주소여야 한다(WebClient 직접 호출).
   org-service-base-uri: ${ORG_SERVICE_BASE_URI:http://localhost:9130}
