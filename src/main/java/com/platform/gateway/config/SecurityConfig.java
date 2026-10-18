@@ -132,6 +132,8 @@ public class SecurityConfig {
                 .toList());
         config.setAllowedMethods(List.of("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"));
         config.setAllowedHeaders(List.of("*"));
+        // 응답 X-Request-Id(RequestLoggingFilter)를 교차 오리진 프론트 JS가 읽게 — 비단순 응답 헤더는 노출 목록에 있어야 보인다.
+        config.setExposedHeaders(List.of("X-Request-Id"));
         config.setAllowCredentials(true);
         config.setMaxAge(3600L); // preflight 캐시(초)
         UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();

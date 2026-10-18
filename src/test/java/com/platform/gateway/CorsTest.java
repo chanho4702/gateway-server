@@ -59,4 +59,16 @@ class CorsTest {
                 .exchange()
                 .expectStatus().isForbidden();
     }
+
+    /** 실제 교차 오리진 응답(401 포함)에 Access-Control-Expose-Headers: X-Request-Id. */
+    @Test
+    void actualCorsResponseExposesRequestId() {
+        client.get().uri("/api/wiki/spaces")
+                .header(HttpHeaders.ORIGIN, "http://localhost:5173")
+                .exchange()
+                .expectStatus().isUnauthorized()
+                .expectHeader().value("Access-Control-Expose-Headers",
+                        v -> org.assertj.core.api.Assertions.assertThat(v).contains("X-Request-Id"))
+                .expectHeader().exists("X-Request-Id");
+    }
 }

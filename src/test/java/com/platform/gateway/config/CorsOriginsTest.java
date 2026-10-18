@@ -30,4 +30,10 @@ class CorsOriginsTest {
     void singleOriginStillWorks() {
         assertThat(configFor("http://localhost:5173").getAllowedOrigins()).containsExactly("http://localhost:5173");
     }
+
+    /** 응답 X-Request-Id(P-12)를 교차 오리진 브라우저 JS가 읽을 수 있어야 한다 — 노출 헤더에 없으면 숨겨진다. */
+    @Test
+    void exposesRequestIdHeader() {
+        assertThat(configFor("http://localhost:5173").getExposedHeaders()).contains("X-Request-Id");
+    }
 }
