@@ -46,7 +46,7 @@ class PatScopeWebFilterTest {
 
     private void allowed(String method, String path, String token) {
         downstreamCalled.set(false);
-        client().method(org.springframework.http.HttpMethod.valueOf(method)).uri(path)
+        client().method(org.springframework.http.HttpMethod.valueOf(method)).uri(java.net.URI.create("http://localhost" + path)) // 템플릿 인코딩 없이 원문 그대로(%·; 변형 시험)
                 .header(HttpHeaders.AUTHORIZATION, "Bearer " + token)
                 .exchange()
                 .expectStatus().isOk();
@@ -55,7 +55,7 @@ class PatScopeWebFilterTest {
 
     private void denied(String method, String path, String token) {
         downstreamCalled.set(false);
-        client().method(org.springframework.http.HttpMethod.valueOf(method)).uri(path)
+        client().method(org.springframework.http.HttpMethod.valueOf(method)).uri(java.net.URI.create("http://localhost" + path)) // 템플릿 인코딩 없이 원문 그대로(%·; 변형 시험)
                 .header(HttpHeaders.AUTHORIZATION, "Bearer " + token)
                 .exchange()
                 .expectStatus().isForbidden()
@@ -144,10 +144,40 @@ class PatScopeWebFilterTest {
         allowed("POST", "/api/board/posts", jwt("AGENT", List.of("wiki:read")));
     }
 
-    /** auth-server V5 이전에 교환돼 캐시된 JWT — 스코프 클레임 자체가 없으면 강제 대상이 아니다. */
+    /**
+     * 스코프 클레임이 없는 PAT JWT — 열어주지 않는다(P-21). auth-server는 모든 교환 JWT에 {@code scope}를
+     * 싣고(V5/V6 백필로 기존 행도 NOT NULL) 교환 JWT 수명은 300초라, 클레임 없는 PAT JWT는 정상 경로로는
+     * 존재할 수 없다. 클레임 없음 = 빈 스코프 = {@code /api/me} 외 거부.
+     */
     @Test
-    void 스코프_클레임이_없는_구버전_PAT는_통과한다() {
-        allowed("POST", "/api/wiki/pages", jwt("PAT", null));
+    void 스코프_클레임이_없는_PAT는_빈_스코프로_취급해_거부한다() {
+        denied("POST", "/api/wiki/pages", jwt("PAT", null));
+        denied("GET", "/api/wiki/pages/7", jwt("PAT", null));
+        allowed("GET", "/api/me", jwt("PAT", null));
+    }
+
+    /** 관리 작업은 org:write로 못 한다 — 권한 부여·구성원 상태·메일 설정·초대는 admin 스코프(P-03). */
+    @Test
+    void org_관리_작업은_org_write만으로는_403이다() {
+        denied("POST", "/api/org/grants", pat("org:write"));
+        denied("PATCH", "/api/org/members/42", pat("org:write"));
+        denied("PUT", "/api/org/settings/mail", pat("org:write"));
+        denied("POST", "/api/org/invitations", pat("org:write"));
+        denied("POST", "/api/org/teams", pat("org:write"));
+        allowed("POST", "/api/org/grants", pat("org:write", "admin"));
+        allowed("PATCH", "/api/org/members/42", pat("org:write", "admin"));
+        // 관리 아닌 org 작업은 그대로
+        allowed("GET", "/api/org/members", pat("org:read"));
+        allowed("PUT", "/api/org/me/avatar", pat("org:write"));
+    }
+
+    /** 경로 정규화 우회 — 다운스트림(Spring MVC)이 같은 핸들러로 보내는 변형도 admin을 요구한다. */
+    @Test
+    void 경로_변형으로_admin_요구를_우회할_수_없다() {
+        denied("POST", "/api/org//grants", pat("org:write"));
+        denied("POST", "/api/org/grants;x=1", pat("org:write"));
+        denied("POST", "/api/org/%67rants", pat("org:write"));
+        denied("POST", "/api/org/x/../grants", pat("org:write"));
     }
 
     /** 다만 금지 경로는 구버전 토큰에도 열지 않는다 — 열면 규칙이 무의미해진다. */
@@ -175,7 +205,7 @@ class PatScopeWebFilterTest {
 
     private void allowedRaw(String method, String path, String authorization) {
         downstreamCalled.set(false);
-        client().method(org.springframework.http.HttpMethod.valueOf(method)).uri(path)
+        client().method(org.springframework.http.HttpMethod.valueOf(method)).uri(java.net.URI.create("http://localhost" + path)) // 템플릿 인코딩 없이 원문 그대로(%·; 변형 시험)
                 .header(HttpHeaders.AUTHORIZATION, authorization)
                 .exchange()
                 .expectStatus().isOk();

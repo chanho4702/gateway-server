@@ -48,7 +48,7 @@ public final class JwtClaims {
     }
 
     /**
-     * {@code scope} 클레임. <b>클레임 자체가 없으면 null</b>(구버전 PAT — 스코프 강제 대상이 아니다),
+     * {@code scope} 클레임. <b>클레임 자체가 없으면 null</b>(호출부 PatScopeWebFilter는 빈 스코프로 취급한다),
      * 있으면 빈 리스트일 수 있다(= 아무 권한도 없음). 배열과 공백/쉼표 구분 문자열을 모두 받는다.
      */
     public static List<String> scopes(JWTClaimsSet claims) {
@@ -72,7 +72,7 @@ public final class JwtClaims {
             }
             return out;
         }
-        return null; // 알 수 없는 형태 — 스코프 강제 대상으로 보지 않는다
+        return null; // 알 수 없는 형태 — 호출부가 빈 스코프로 취급한다(거부 쪽)
     }
 
     private static void addIfPresent(List<String> out, String value) {
