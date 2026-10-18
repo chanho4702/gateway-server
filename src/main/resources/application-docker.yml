@@ -8,6 +8,19 @@ logging:
     format:
       console: ecs
 
+spring:
+  cloud:
+    gateway:
+      server:
+        webflux:
+          # 게이트웨이 앞 프록시는 nginx 하나뿐이고 호스트 포트도 발행하지 않는다 — 믿을 대상은 compose 네트워크 안의
+          # nginx다(P-23). compose 기본망 서브넷은 도커가 기본 주소 풀(172.17~31/16, 192.168/16)에서 배정하므로
+          # 기본값은 그 풀만 믿는다(루프백·10/8 제외 — 예전 base 값은 사설대역 전체였다).
+          # nginx 주소를 고정하면(compose ipam + ipv4_address) GATEWAY_TRUSTED_PROXIES를 그 IP 하나로 좁힌다(정규식 원문):
+          #   GATEWAY_TRUSTED_PROXIES=172\.30\.0\.10
+          # nginx를 빠뜨리면 nginx가 붙인 X-Forwarded-Host가 사라져 OIDC redirect_uri가 깨진다(README trusted-proxies 절).
+          trusted-proxies: "${GATEWAY_TRUSTED_PROXIES:172\\.(1[6-9]|2[0-9]|3[01])\\..*|192\\.168\\..*}"
+
 platform:
   # 컨테이너 네트워크에서는 서비스명이 DNS 호스트명. compose가 AUTH_SERVER_BASE_URI를 주입하지 않아도
   # 이 기본값으로 동작한다. AGENT_INTERNAL_SECRET은 auth-server와 같은 값을 compose가 주입해야 한다.

@@ -20,8 +20,11 @@ spring:
           # SCG 4.1+ 보안 기본값: trusted-proxies 미설정이면 X-Forwarded-*를 신뢰하지 않고 제거한다.
           # 그러면 nginx가 붙인 X-Forwarded-Host(localhost)가 auth-server에 못 가서
           # OIDC redirect_uri가 eureka IP(:9000)로 구성돼 Keycloak이 거부한다.
-          # 로컬 dev 전용 — 루프백 + 사설대역(도커 NAT 포함)을 신뢰.
-          trusted-proxies: "127\\.0\\.0\\.1|::1|0:0:0:0:0:0:0:1|10\\..*|172\\.(1[6-9]|2[0-9]|3[01])\\..*|192\\.168\\..*"
+          # 범위는 프로필마다 다르다(P-23). 여기(프로필 없음)는 루프백만 — 같은 호스트의 프록시(vite·로컬 nginx)만 믿는다.
+          #   dev    → application-dev.yml: 루프백 + 사설대역 전체(도커 NAT로 호스트 dev 게이트웨이에 붙는 경우 포함)
+          #   docker → application-docker.yml: 도커 브리지 주소 풀만, GATEWAY_TRUSTED_PROXIES로 nginx 주소까지 좁힌다
+          # 이 값은 X-Forwarded-*를 다운스트림에 넘길지만 정한다. rate limit 키(XFF 맨 오른쪽 1홉, RateLimitConfig)와는 무관하다.
+          trusted-proxies: "127\\.0\\.0\\.1|::1|0:0:0:0:0:0:0:1"
           httpclient:
             connect-timeout: 3000 # ms — 다운스트림 연결 3초
             response-timeout: 10s # 응답 전체 10초 (무한대기 방지)
