@@ -39,4 +39,24 @@ class CorsTest {
                 .expectStatus().isOk()
                 .expectHeader().valueEquals("Access-Control-Allow-Origin", "http://localhost:5173");
     }
+
+    /** org(Grant·Member·Team)·agent(Persona)가 PATCH를 쓴다 — 교차 오리진 preflight가 거부되면 안 된다(P-16). */
+    @Test
+    void preflightForPatchIsAllowed() {
+        client.method(HttpMethod.OPTIONS).uri("/api/org/members/1")
+                .header(HttpHeaders.ORIGIN, "http://localhost:5173")
+                .header(HttpHeaders.ACCESS_CONTROL_REQUEST_METHOD, "PATCH")
+                .exchange()
+                .expectStatus().isOk()
+                .expectHeader().valueEquals("Access-Control-Allow-Origin", "http://localhost:5173");
+    }
+
+    @Test
+    void preflightFromUnknownOriginIsRejected() {
+        client.method(HttpMethod.OPTIONS).uri("/api/board/posts")
+                .header(HttpHeaders.ORIGIN, "http://evil.example")
+                .header(HttpHeaders.ACCESS_CONTROL_REQUEST_METHOD, "POST")
+                .exchange()
+                .expectStatus().isForbidden();
+    }
 }

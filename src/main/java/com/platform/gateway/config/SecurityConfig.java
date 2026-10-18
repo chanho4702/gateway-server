@@ -117,13 +117,20 @@ public class SecurityConfig {
     //  AudienceValidator.java가 필요한 이유: 서명이 유효해도 그 토큰이 이 API를 위해 발급된 것인지는 aud 클레임으로 확인해야 합니다.
     //  같은 IdP가 여러 서비스용 토큰을 발급할 때, A 서비스용 토큰으로 B 서비스를 호출하는 토큰 혼용(confused deputy)을 막는 장치입니다.
 
-    /** CORS 단일 소스 — yml globalcors 대신 이 빈. credentials와 함께 쓰므로 오리진은 구체 값('*' 금지). */
+    /**
+     * CORS 단일 소스 — yml globalcors 대신 이 빈. credentials와 함께 쓰므로 오리진은 구체 값('*' 금지).
+     * {@code platform.cors-allowed-origin}은 쉼표 목록도 받는다(dev 프론트 여럿 동시 사용, P-16) — 기존 단일 값 그대로 호환.
+     * 메서드에 PATCH가 있어야 한다 — org(Grant·Member·Team)·agent(Persona)가 PATCH를 쓴다.
+     */
     @Bean
     CorsConfigurationSource corsConfigurationSource(
-            @Value("${platform.cors-allowed-origin}") String allowedOrigin) {
+            @Value("${platform.cors-allowed-origin}") String allowedOrigins) {
         CorsConfiguration config = new CorsConfiguration();
-        config.setAllowedOrigins(List.of(allowedOrigin));
-        config.setAllowedMethods(List.of("GET", "POST", "PUT", "DELETE", "OPTIONS"));
+        config.setAllowedOrigins(java.util.Arrays.stream(allowedOrigins.split(","))
+                .map(String::trim)
+                .filter(origin -> !origin.isEmpty())
+                .toList());
+        config.setAllowedMethods(List.of("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"));
         config.setAllowedHeaders(List.of("*"));
         config.setAllowCredentials(true);
         config.setMaxAge(3600L); // preflight 캐시(초)
