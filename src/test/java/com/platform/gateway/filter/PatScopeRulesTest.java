@@ -139,4 +139,111 @@ class PatScopeRulesTest {
         assertThat(PatScopeRules.satisfies(List.of(), Set.of("wiki:read"))).isFalse();
         assertThat(PatScopeRules.satisfies(List.of(), Set.of())).isTrue();
     }
+
+    // --- 관리 경로 표(P-03) ------------------------------------------------------
+    // 실제 경로는 org-service·wiki-backend·alm-backend 컨트롤러 매핑에서 옮겼다(2026-10-18 main 기준).
+
+    /** org-service — 권한 원장·초대·메일 설정은 메서드 무관 전부 관리 작업이다(조회도 리소스 ADMIN 전용). */
+    @Test
+    void org_권한_초대_설정은_메서드_무관_admin을_요구한다() {
+        assertThat(required("/api/org/grants", "GET")).containsExactlyInAnyOrder("org:read", "admin");
+        assertThat(required("/api/org/grants/audit", "GET")).containsExactlyInAnyOrder("org:read", "admin");
+        assertThat(required("/api/org/grants", "POST")).containsExactlyInAnyOrder("org:write", "admin");
+        assertThat(required("/api/org/grants/5", "PATCH")).containsExactlyInAnyOrder("org:write", "admin");
+        assertThat(required("/api/org/grants/5", "DELETE")).containsExactlyInAnyOrder("org:write", "admin");
+        assertThat(required("/api/org/invitations", "GET")).containsExactlyInAnyOrder("org:read", "admin");
+        assertThat(required("/api/org/invitations", "POST")).containsExactlyInAnyOrder("org:write", "admin");
+        assertThat(required("/api/org/invitations/3/resend", "POST")).containsExactlyInAnyOrder("org:write", "admin");
+        assertThat(required("/api/org/invitations/3", "DELETE")).containsExactlyInAnyOrder("org:write", "admin");
+        assertThat(required("/api/org/settings/mail", "GET")).containsExactlyInAnyOrder("org:read", "admin");
+        assertThat(required("/api/org/settings/mail", "PUT")).containsExactlyInAnyOrder("org:write", "admin");
+        assertThat(required("/api/org/settings/mail/test", "POST")).containsExactlyInAnyOrder("org:write", "admin");
+        assertThat(required("/api/org/settings/mail/log/9/retry", "POST")).containsExactlyInAnyOrder("org:write", "admin");
+    }
+
+    /** 구성원 — 상태 전이·승인·에이전트 등록·남의 아바타 변경과 관리 화면 조회(승인 대기·이력)만 admin. */
+    @Test
+    void org_구성원_관리는_admin_일반_조회는_org_read() {
+        assertThat(required("/api/org/members/42", "PATCH")).containsExactlyInAnyOrder("org:write", "admin");
+        assertThat(required("/api/org/members/42/approve", "POST")).containsExactlyInAnyOrder("org:write", "admin");
+        assertThat(required("/api/org/members/agents", "POST")).containsExactlyInAnyOrder("org:write", "admin");
+        assertThat(required("/api/org/members/42/avatar", "PUT")).containsExactlyInAnyOrder("org:write", "admin");
+        assertThat(required("/api/org/members/42/avatar", "DELETE")).containsExactlyInAnyOrder("org:write", "admin");
+        assertThat(required("/api/org/members/pending", "GET")).containsExactlyInAnyOrder("org:read", "admin");
+        assertThat(required("/api/org/members/42/events", "GET")).containsExactlyInAnyOrder("org:read", "admin");
+        // 일반 조회는 관리가 아니다 — ALM·위키 화면이 쓰는 멤버 목록·상세·아바타
+        assertThat(required("/api/org/members", "GET")).containsExactly("org:read");
+        assertThat(required("/api/org/members/page", "GET")).containsExactly("org:read");
+        assertThat(required("/api/org/members/42", "GET")).containsExactly("org:read");
+        assertThat(required("/api/org/members/42/avatar", "GET")).containsExactly("org:read");
+    }
+
+    /** 팀 — 쓰기(생성·수정·삭제·팀원·리더)만 admin, 조회는 org:read. 본인 프로필(me)은 관리가 아니다. */
+    @Test
+    void org_팀_쓰기는_admin_조회와_본인은_아니다() {
+        assertThat(required("/api/org/teams", "POST")).containsExactlyInAnyOrder("org:write", "admin");
+        assertThat(required("/api/org/teams/1", "PUT")).containsExactlyInAnyOrder("org:write", "admin");
+        assertThat(required("/api/org/teams/1", "DELETE")).containsExactlyInAnyOrder("org:write", "admin");
+        assertThat(required("/api/org/teams/1/members/42", "PUT")).containsExactlyInAnyOrder("org:write", "admin");
+        assertThat(required("/api/org/teams/1/members/42", "PATCH")).containsExactlyInAnyOrder("org:write", "admin");
+        assertThat(required("/api/org/teams/1/members/42", "DELETE")).containsExactlyInAnyOrder("org:write", "admin");
+        assertThat(required("/api/org/teams", "GET")).containsExactly("org:read");
+        assertThat(required("/api/org/teams/1/members", "GET")).containsExactly("org:read");
+        assertThat(required("/api/org/me", "GET")).containsExactly("org:read");
+        assertThat(required("/api/org/me/permissions", "GET")).containsExactly("org:read");
+        assertThat(required("/api/org/me/avatar", "PUT")).containsExactly("org:write");
+    }
+
+    /** 위키 — 페이지 제한(권한) 변경, 스페이스 삭제, 휴지통 비우기·영구 삭제(스페이스 ADMIN 전용). */
+    @Test
+    void wiki_권한_변경과_영구_삭제는_admin을_요구한다() {
+        assertThat(required("/api/wiki/pages/7/restrictions", "PUT")).containsExactlyInAnyOrder("wiki:write", "admin");
+        assertThat(required("/api/wiki/spaces/3", "DELETE")).containsExactlyInAnyOrder("wiki:write", "admin");
+        assertThat(required("/api/wiki/spaces/3/trash", "DELETE")).containsExactlyInAnyOrder("wiki:write", "admin");
+        assertThat(required("/api/wiki/pages/7/purge", "DELETE")).containsExactlyInAnyOrder("wiki:write", "admin");
+        // 그 밖의 위키 작업은 제품 스코프만
+        assertThat(required("/api/wiki/pages/7/restrictions", "GET")).containsExactly("wiki:read");
+        assertThat(required("/api/wiki/spaces/3", "PUT")).containsExactly("wiki:write");
+        assertThat(required("/api/wiki/spaces/3/trash", "GET")).containsExactly("wiki:read");
+        assertThat(required("/api/wiki/pages/7/restore", "POST")).containsExactly("wiki:write");
+        assertThat(required("/api/wiki/pages/7", "DELETE")).containsExactly("wiki:write");
+        assertThat(required("/api/wiki/spaces/3/pages/children", "GET")).containsExactly("wiki:read");
+    }
+
+    /** ALM — 전역 설정 레지스트리 쓰기(전역 관리자)·프로젝트 설정 쓰기·프로젝트 삭제(프로젝트 ADMIN). */
+    @Test
+    void alm_설정_쓰기와_프로젝트_삭제는_admin을_요구한다() {
+        assertThat(required("/api/alm/settings/statuses", "POST")).containsExactlyInAnyOrder("alm:write", "admin");
+        assertThat(required("/api/alm/settings/schemes/2", "PUT")).containsExactlyInAnyOrder("alm:write", "admin");
+        assertThat(required("/api/alm/settings/priorities/2/move", "POST")).containsExactlyInAnyOrder("alm:write", "admin");
+        assertThat(required("/api/alm/settings/issue-types/2", "DELETE")).containsExactlyInAnyOrder("alm:write", "admin");
+        assertThat(required("/api/alm/projects/5/settings/scheme", "PUT")).containsExactlyInAnyOrder("alm:write", "admin");
+        assertThat(required("/api/alm/projects/5/settings/custom-body", "PUT")).containsExactlyInAnyOrder("alm:write", "admin");
+        assertThat(required("/api/alm/projects/5", "DELETE")).containsExactlyInAnyOrder("alm:write", "admin");
+        assertThat(required("/api/alm/projects/5/permanent", "DELETE")).containsExactlyInAnyOrder("alm:write", "admin");
+        // 설정 조회는 이슈 화면이 쓰므로 alm:read 그대로
+        assertThat(required("/api/alm/settings/statuses", "GET")).containsExactly("alm:read");
+        assertThat(required("/api/alm/projects/5/settings", "GET")).containsExactly("alm:read");
+        assertThat(required("/api/alm/projects/5", "PUT")).containsExactly("alm:write");
+        assertThat(required("/api/alm/projects/5/issues/import", "POST")).containsExactly("alm:write");
+    }
+
+    /**
+     * 경로 정규화 — 다운스트림(Spring MVC)은 빈 세그먼트·`;매트릭스`·퍼센트 인코딩·`.`/`..`을 정리한 뒤
+     * 핸들러를 고른다. 규칙도 같은 경로로 보고 판정해야 변형으로 admin을 비켜 갈 수 없다.
+     */
+    @Test
+    void 관리_경로는_변형된_표기로도_우회되지_않는다() {
+        assertThat(required("/api/org//grants", "POST")).contains("admin");
+        assertThat(required("/api/org/grants;jsessionid=x", "POST")).contains("admin");
+        assertThat(required("/api/org/%67rants", "POST")).contains("admin");
+        assertThat(required("/api/org/GRANTS", "POST")).contains("admin");
+        assertThat(required("/api/org/x/../grants", "POST")).contains("admin");
+        assertThat(required("/api/org/./grants/", "POST")).contains("admin");
+        assertThat(required("/api/wiki/admin;x/stats", "GET")).contains("admin");
+        assertThat(required("/api/%77iki/admin/stats", "GET")).containsExactlyInAnyOrder("wiki:read", "admin");
+        forbidden("/api/./platform/health", "GET");
+        forbidden("/api/platform;x/health", "GET");
+        forbidden("/api/wiki/../platform/health", "GET");
+    }
 }
