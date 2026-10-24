@@ -185,6 +185,21 @@ spring:
                     methods: GET
                     series: ""   # 상태코드 재시도 없음 — 다운스트림 5xx(예: org 불능 503)에 부하를 3배로 얹지 않는다
                     exceptions: java.io.IOException
+            # ALM 프로젝트 실시간 스트림(SSE, 2026-10-24) — agent-office-stream과 같은 사정: 전역 response-timeout 10s는
+            # "읽기 사이 최대 간격"이라 15초 heartbeat 스트림을 끊는다. 이 경로만 끈다(-1). 아래 alm 라우트보다 먼저 와야 한다.
+            # CB 이름을 alm으로 공유해 disable-time-limiter-map.alm이 그대로 적용되고, 불능이면 일반 alm과 같은 계약 503이다.
+            # Retry는 걸지 않는다(재연결은 클라이언트가 Last-Event-ID로 — 노드가 여럿이어도 Redis Streams id라 어느 노드든 이어진다).
+            - id: alm-stream
+              uri: ${ALM_SERVICE_URI:lb://alm-backend}
+              predicates:
+                - Path=/api/alm/projects/*/stream
+              metadata:
+                response-timeout: -1
+              filters:
+                - name: CircuitBreaker
+                  args:
+                    name: alm
+                    fallbackUri: forward:/fallback/alm
             - id: alm-long
               uri: ${ALM_SERVICE_URI:lb://alm-backend}
               predicates:
