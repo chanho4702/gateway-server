@@ -229,6 +229,19 @@ class PatScopeRulesTest {
     }
 
     /**
+     * 개발 기록(alm V41, 2026-10-25) — 표를 바꾸지 않고 기존 규칙에 든다: 커밋 수집은 alm:write, 조회는 alm:read,
+     * 저장소 등록 쓰기는 프로젝트 설정 쓰기(/api/alm/projects/{id}/settings/**)라 admin까지.
+     */
+    @Test
+    void alm_개발_기록_경로는_기존_규칙에_든다() {
+        assertThat(required("/api/alm/dev/commits", "POST")).containsExactly("alm:write");
+        assertThat(required("/api/alm/issues/3/development", "GET")).containsExactly("alm:read");
+        assertThat(required("/api/alm/projects/5/commits", "GET")).containsExactly("alm:read");
+        assertThat(required("/api/alm/projects/5/settings/repositories", "GET")).containsExactly("alm:read");
+        assertThat(required("/api/alm/projects/5/settings/repositories", "PUT")).containsExactlyInAnyOrder("alm:write", "admin");
+    }
+
+    /**
      * 경로 정규화 — 다운스트림(Spring MVC)은 빈 세그먼트·`;매트릭스`·퍼센트 인코딩·`.`/`..`을 정리한 뒤
      * 핸들러를 고른다. 규칙도 같은 경로로 보고 판정해야 변형으로 admin을 비켜 갈 수 없다.
      */
