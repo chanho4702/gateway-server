@@ -87,8 +87,14 @@ public class SecurityConfig {
                         .pathMatchers("/oauth2/**", "/login/**", "/invite/**", "/api/auth/**",
                                 "/.well-known/**", "/fallback/**").permitAll()
                         // 자기 자신의 상태·버전. 내부 네트워크 전용이다 — 컨테이너 호스트 포트를 발행하지 않고
-                        // nginx도 /actuator/**를 넘기지 않는다. 다른 서비스와 같은 두 경로만 연다.
-                        .pathMatchers("/actuator/health", "/actuator/health/**", "/actuator/info").permitAll()
+                        // nginx도 /actuator/**를 넘기지 않는다. 다른 서비스와 같은 경로만 연다.
+                        // prometheus는 Alloy가 도커 내부망에서 긁는 메트릭(infra-settings observability).
+                        .pathMatchers("/actuator/health", "/actuator/health/**", "/actuator/info",
+                                "/actuator/prometheus").permitAll()
+                        // search 라우트만 StripPrefix=2라 /api/search/actuator/** 가 다운스트림(search-service 또는
+                        // 라이트 모드의 wiki-backend)의 /actuator/**로 바뀐다 — 로그인 사용자가 내부 전용 헬스 상세·
+                        // 메트릭을 읽는 통로가 되므로 게이트웨이에서 닫는다. 다른 라우트는 접두사를 떼지 않아 해당 없다.
+                        .pathMatchers("/api/search/actuator", "/api/search/actuator/**").denyAll()
                         // /api/platform/** — 관리자 대시보드 API. 여기서는 로그인만 요구하고(anyExchange),
                         // 전역 관리자 판정은 PlatformController의 AdminGate가 org-service에 물어 한다.
                         // WebSocket은 브라우저가 Authorization header를 안정적으로 넣을 수 없다.

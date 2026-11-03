@@ -359,14 +359,18 @@ resilience4j:
         # 1초 넘는 정상 응답까지 fallback 503으로 잘린다(httpclient response-timeout 10s보다 크게).
         timeout-duration: 11s
 
-# 자기 자신의 상태·버전. health,info만 노출하고 나머지 엔드포인트는 열지 않는다.
-# show-details: always는 내부 네트워크 전용이라는 전제 위에 있다 — 게이트웨이 호스트 포트는
-# 발행하지 않고(compose) nginx도 /actuator/**를 넘기지 않는다.
+# 자기 자신의 상태·버전·메트릭. health,info,prometheus만 노출하고 나머지 엔드포인트는 열지 않는다.
+# show-details: always·prometheus는 내부 네트워크 전용이라는 전제 위에 있다 — 게이트웨이 호스트 포트는
+# 발행하지 않고(compose) nginx도 /actuator/**를 넘기지 않는다. prometheus는 Alloy가 도커 내부망에서 긁는다.
 management:
   endpoints:
     web:
       exposure:
-        include: health,info
+        include: health,info,prometheus
+  metrics:
+    tags:
+      # 모든 미터에 서비스 이름 태그 — Grafana에서 서비스별로 가른다(Alloy가 compose service 라벨도 따로 붙인다).
+      application: ${spring.application.name}
   endpoint:
     health:
       show-details: always

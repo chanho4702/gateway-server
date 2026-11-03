@@ -74,6 +74,24 @@ class PlatformEndpointsSecurityTest {
                 .expectStatus().value(status -> assertThat(status).isNotEqualTo(401));
     }
 
+    /** 메트릭은 Alloy가 내부망에서 토큰 없이 긁는다 — Prometheus 텍스트 형식에 서비스 태그가 붙어 나와야 한다. */
+    @Test
+    void actuator_prometheus는_토큰_없이_열리고_application_태그가_붙는다() {
+        String body = client().get().uri("/actuator/prometheus").exchange()
+                .expectStatus().isOk()
+                .expectBody(String.class).returnResult().getResponseBody();
+        assertThat(body).contains("jvm_memory_used_bytes").contains("application=\"gateway-server\"");
+    }
+
+    /** search 라우트는 접두사를 떼므로 다운스트림 actuator로 가는 통로를 게이트웨이가 막아야 한다. */
+    @Test
+    void search_라우트로_다운스트림_actuator에_닿지_않는다() {
+        for (String path : new String[]{"/api/search/actuator/prometheus", "/api/search/actuator/health"}) {
+            client().get().uri(path).exchange()
+                    .expectStatus().value(status -> assertThat(status).as(path).isIn(401, 403));
+        }
+    }
+
     /** 노출 목록에 없는 엔드포인트는 열려 있으면 안 된다 — 게이트웨이 라우트 덤프가 그중 하나다. */
     @Test
     void 다른_actuator_엔드포인트는_노출하지_않는다() {
