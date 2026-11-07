@@ -155,7 +155,7 @@ spring:
             - id: wiki-long
               uri: ${WIKI_SERVICE_URI:lb://wiki-backend}
               predicates:
-                - Path=/api/wiki/pages/*/export.pdf,/api/wiki/pages/*/attachments,/api/wiki/pages/*/attachments/confirm
+                - Path=/api/wiki/pages/*/export.pdf,/api/wiki/pages/*/export.docx,/api/wiki/pages/*/attachments,/api/wiki/pages/*/attachments/confirm,/api/wiki/spaces/*/import/markdown
               metadata:
                 response-timeout: 60000
               filters:

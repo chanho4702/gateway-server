@@ -46,6 +46,8 @@ class WikiRouteResilienceTest {
         wiki = HttpServer.create(new InetSocketAddress(0), 0);
         wiki.createContext("/api/wiki/slow", exchange -> respondAfter(exchange, 1500, 200, "[]"));
         wiki.createContext("/api/wiki/pages/7/export.pdf", exchange -> respondAfter(exchange, 4000, 200, "pdf"));
+        wiki.createContext("/api/wiki/pages/7/export.docx", exchange -> respondAfter(exchange, 4000, 200, "docx"));
+        wiki.createContext("/api/wiki/spaces/3/import/markdown", exchange -> respondAfter(exchange, 4000, 200, "{}"));
         wiki.createContext("/api/wiki/pages/7", exchange -> respondAfter(exchange, 4000, 200, "{}"));
         wiki.createContext("/api/wiki/unavailable", exchange -> {
             unavailableHits.incrementAndGet();
@@ -106,6 +108,16 @@ class WikiRouteResilienceTest {
     @Test
     void pdfExportGetsLongerResponseTimeout() {
         client().get().uri("/api/wiki/pages/7/export.pdf").exchange().expectStatus().isOk();
+    }
+
+    @Test
+    void wordExportGetsLongerResponseTimeout() {
+        client().get().uri("/api/wiki/pages/7/export.docx").exchange().expectStatus().isOk();
+    }
+
+    @Test
+    void markdownImportGetsLongerResponseTimeout() {
+        client().post().uri("/api/wiki/spaces/3/import/markdown").bodyValue("x").exchange().expectStatus().isOk();
     }
 
     @Test
