@@ -33,7 +33,7 @@
 
 - **CORS 중앙화** — 브라우저(myFront:5173)의 모든 요청이 게이트웨이를 통과하므로 CORS는 여기 한 곳에서만 처리한다. auth-server와 board-service는 CORS를 설정하지 않는다.
 - **JWT 조기차단(1차 방어)** — 정책은 `anyExchange().authenticated()`이고 공개 경로만 열어 둔다. 즉 **명시적으로 열지 않은 경로는 전부 인증 필수**다. 무토큰/위조/만료 토큰은 다운스트림에 닿기 전에 401로 차단된다. JWKS + issuer + audience 검증(board-service와 동일 계약). 유효 토큰의 `Authorization` 헤더는 그대로 다운스트림에 전달된다.
-  - 공개(permitAll): OPTIONS 프리플라이트 · `/oauth2/**` · `/login/**` · `/api/auth/**` · `/.well-known/**` · `/fallback/**` · `GET /api/board/posts/**`
+  - 공개(permitAll): OPTIONS 프리플라이트 · `/oauth2/**` · `/login/**` · `/api/auth/**` · `/.well-known/**` · `/fallback/**` · `GET /api/board/posts/**` · `POST /api/alm/webhooks/*/*`(저장소 웹훅 수신 — GitHub·GitLab 서명은 alm-backend가 검증, `alm-webhook` 라우트 IP당 10 r/s·순간 30)
   - 인증 필수: `/api/me` · `/api/org/**` · `/api/wiki/**` · `/api/alm/**` · **`/api/search/**`**(GraphQL·재색인 모두) · 그 외 전부
   - **경로 정책은 board-service SecurityConfig와 동기 유지할 것.** `/fallback/**`을 열어 두지 않으면 서킷브레이커가 forward한 내부 요청이 401로 죽는다.
 - **개인 API 토큰(PAT) 교환 — 보안 체인 앞** — 외부 클라이언트(스크립트·CI)가 `Authorization: Bearer chanho_pat_…` 로 기존 API를 부르면, `PatExchangeWebFilter`가 auth-server에서 플랫폼 JWT를 받아 헤더를 갈아끼운다. 다운스트림 서비스는 한 줄도 바뀌지 않는다 — 지금처럼 JWT만 본다(아래 전용 섹션).

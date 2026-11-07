@@ -72,6 +72,20 @@ class SecurityConfigTest {
      * /api/agent/mcp/** 이외의 agent 경로(tokens/personas 등)는 permitAll에 들어가지 않는다 —
      * anyExchange().authenticated()에 기대는 계약이라, 누가 permitAll을 넓히면 여기서 깨진다.
      */
+    /**
+     * 저장소 웹훅 수신(alm-backend V44) — GitHub·GitLab은 JWT 없이 POST한다. 게이트웨이는 막지 않고 서명 검증은 alm-backend 몫.
+     * 열리는 것은 POST /api/alm/webhooks/{provider}/{id} 하나뿐 — 같은 접두의 GET·깊은 경로·웹훅 관리 API는 여전히 JWT다.
+     */
+    @Test
+    void almWebhookReceivePassesSecurityButOnlyThatShape() {
+        client().post().uri("/api/alm/webhooks/github/someHookId").exchange()
+                .expectStatus().value(status -> assertThat(status).isNotEqualTo(401));
+        client().get().uri("/api/alm/webhooks/github/someHookId").exchange().expectStatus().isUnauthorized();
+        client().post().uri("/api/alm/webhooks/github/someHookId/extra").exchange().expectStatus().isUnauthorized();
+        client().get().uri("/api/alm/projects/1/settings/webhooks").exchange().expectStatus().isUnauthorized();
+        client().post().uri("/api/alm/projects/1/settings/webhooks").exchange().expectStatus().isUnauthorized();
+    }
+
     @Test
     void agentNonMcpPathsWithoutTokenAre401() {
         client().get().uri("/api/agent/tokens").exchange().expectStatus().isUnauthorized();

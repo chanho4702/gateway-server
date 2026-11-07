@@ -40,6 +40,19 @@ class RouteConfigTest {
         }
     }
 
+    /** 공개 웹훅 수신 경로(alm-backend V44)는 IP당 제한이 걸리고, 일반 alm 라우트보다 먼저 매칭된다 */
+    @Test
+    void almWebhookRouteIsRateLimitedAndPrecedesAlm() {
+        List<org.springframework.cloud.gateway.route.Route> routes =
+                routeLocator.getRoutes().collectList().block();
+        List<String> ids = routes.stream().map(r -> r.getId()).toList();
+        assertThat(ids).contains("alm-webhook");
+        assertThat(ids.indexOf("alm-webhook")).isLessThan(ids.indexOf("alm"));
+        var webhook = routes.stream().filter(r -> r.getId().equals("alm-webhook")).findFirst().orElseThrow();
+        assertThat(webhook.getUri()).hasScheme("lb").hasHost("alm-backend");
+        assertThat(webhook.getFilters().toString()).contains("RequestRateLimiter").doesNotContain("Retry");
+    }
+
     @Test
     void authRoutesHaveRateLimiterFilter() {
         List<org.springframework.cloud.gateway.route.Route> routes =

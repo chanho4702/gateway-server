@@ -102,6 +102,9 @@ public class SecurityConfig {
                         .pathMatchers("/api/wiki/collaboration", "/api/wiki/collaboration/**").permitAll()
                         //인증 관련 경로 + /fallback/** 허용 — fallback을 안 열어두면 서킷브레이커가 forward한 내부 요청이 401로 죽는 미묘한 버그가 생김
                         .pathMatchers(HttpMethod.GET, "/api/board/posts/**").permitAll() // 비 로그인 게시글 열람
+                        // 저장소 웹훅 수신(alm-backend V44) — GitHub·GitLab은 JWT를 실을 수 없다. 서명 검증은 alm-backend
+                        // WebhookReceiver가 한다(서비스 SecurityConfig와 동기). POST·정확히 두 조각만 — 관리 API는 여전히 JWT.
+                        .pathMatchers(HttpMethod.POST, "/api/alm/webhooks/*/*").permitAll()
                         .anyExchange().authenticated())
                 .oauth2ResourceServer(oauth2 -> oauth2.jwt(Customizer.withDefaults()));
         return http.build();
