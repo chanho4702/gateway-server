@@ -405,6 +405,10 @@ platform:
   issuer: ${PLATFORM_ISSUER:http://localhost:9000}
   audience: ${PLATFORM_AUDIENCE:platform-api}
   cors-allowed-origin: ${CORS_ALLOWED_ORIGIN:http://localhost:5173}
+  # 이 설치에 들어 있는 제품(콤마 목록, 공백·대소문자 무관, 모르는 이름은 경고 후 무시, 빈 값=전부).
+  # GET /api/platform/features의 products로만 노출한다 — 위키 스마트 링크가 ALM 설치를 감지하는 근거.
+  # K1(제품 분리 설치)의 씨앗: 끈 제품의 라우트 404·compose 프로필은 K1에서 이 값에 붙인다.
+  products: ${PLATFORM_PRODUCTS:wiki,alm,board,agent}
   # 개인 API 토큰(PAT) 교환 — PatExchangeWebFilter가 auth-server 내부 엔드포인트를 호출한다.
   # internal-secret이 비어 있으면 PAT 요청을 전부 401로 거부한다(fail-closed) — 열어두지 않는다.
   auth-server-base-uri: ${AUTH_SERVER_BASE_URI:http://localhost:9000}

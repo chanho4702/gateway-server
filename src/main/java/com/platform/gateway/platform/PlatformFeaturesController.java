@@ -20,8 +20,14 @@ import java.util.Map;
  * 정하는 데 쓴다.
  *
  * <pre>{@code
- * { "search": { "mode": "opensearch", "unified": true, "reindex": true } }
+ * { "search":   { "mode": "opensearch", "unified": true, "reindex": true },
+ *   "products": { "wiki": true, "alm": true, "board": true, "agent": true } }
  * }</pre>
+ *
+ * <p>{@code products}는 이 설치에 들어 있는 제품({@link PlatformProductsProperties},
+ * env {@code PLATFORM_PRODUCTS}, 기본 전부)이다. 네 키가 항상 다 온다. wiki-front 어댑터는
+ * {@code products}가 없으면 <b>전부 false</b>로 읽는다(모르면 끈다 — 검색의 "모르면 lite"와 같은 방향).
+ * 지금 소비자는 위키 스마트 링크(ALM 이슈 카드 조회·슬래시 메뉴 "ALM 이슈" 노출 여부)다.
  *
  * <p><b>왜 게이트웨이인가</b>: 검색 모드를 아는 유일한 컴포넌트다. 라우트 대상·헬스 표의 검색 행과
  * 같은 값 하나({@code SEARCH_MODE})에서 나오므로 화면과 라우팅이 어긋날 수 없다(설계 §6.2).
@@ -34,7 +40,7 @@ import java.util.Map;
  * <p>PAT는 {@link PatScopeWebFilter}가 {@code /api/platform/**}을 전면 거부한다. 여기서 한 번 더
  * 닫는 것은 {@link PlatformController}와 같은 이유다 — 필터 규칙이 바뀌어도 이 경로는 열리지 않는다.
  *
- * <p><b>이 세 필드가 프론트와의 계약이다.</b> wiki-front가 이 shape 그대로 색인 관리 메뉴를 지우므로,
+ * <p><b>{@code search}의 세 필드와 {@code products}의 네 키가 프론트와의 계약이다.</b> wiki-front가 이 shape 그대로 색인 관리 메뉴를 지우므로,
  * 이름·타입을 바꾸거나 값을 늘리는 변경은 wiki-front의 어댑터와 <b>같은 시점에</b> 나가야 한다.
  * 프론트는 실패(404·401·5xx·JSON 아님)를 전부 {@code lite}로 접으므로, 필드를 없애는 변경은
  * 오류가 아니라 <i>조용한 기능 꺼짐</i>으로 나타난다 — 그래서 눈에 띄지 않는다.
@@ -46,9 +52,12 @@ import java.util.Map;
 public class PlatformFeaturesController {
 
     private final SearchProperties searchProperties;
+    private final PlatformProductsProperties productsProperties;
 
-    public PlatformFeaturesController(SearchProperties searchProperties) {
+    public PlatformFeaturesController(SearchProperties searchProperties,
+                                      PlatformProductsProperties productsProperties) {
         this.searchProperties = searchProperties;
+        this.productsProperties = productsProperties;
     }
 
     @GetMapping("/features")
@@ -59,12 +68,15 @@ public class PlatformFeaturesController {
             return ResponseEntity.status(HttpStatus.FORBIDDEN).body(Map.of("error", "forbidden"));
         }
         SearchMode mode = searchProperties.getMode();
-        return ResponseEntity.ok(Map.of("search", Map.of(
-                // 라이트 모드 안내 문구를 프론트가 고르는 근거. 계약은 소문자 세 값뿐이다.
-                "mode", mode.id(),
-                // 통합(cross-app) 검색은 opensearch/external 전용 능력이다(설계 §7).
-                "unified", mode.unified(),
-                // 색인 관리 메뉴 노출. lite에는 /admin/reindex 자체가 없다(404).
-                "reindex", mode.reindex())));
+        return ResponseEntity.ok(Map.of(
+                "search", Map.of(
+                        // 라이트 모드 안내 문구를 프론트가 고르는 근거. 계약은 소문자 세 값뿐이다.
+                        "mode", mode.id(),
+                        // 통합(cross-app) 검색은 opensearch/external 전용 능력이다(설계 §7).
+                        "unified", mode.unified(),
+                        // 색인 관리 메뉴 노출. lite에는 /admin/reindex 자체가 없다(404).
+                        "reindex", mode.reindex()),
+                // 설치 제품 — 위키 스마트 링크가 ALM 설치를 감지한다. K1 전까지는 노출만(라우트는 그대로).
+                "products", productsProperties.getInstalled()));
     }
 }

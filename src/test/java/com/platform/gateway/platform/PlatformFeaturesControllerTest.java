@@ -5,10 +5,14 @@ import com.platform.gateway.search.SearchMode;
 import com.platform.gateway.search.SearchProperties;
 import com.platform.gateway.security.TestJwt;
 import org.junit.jupiter.api.Test;
+import org.springframework.boot.context.properties.bind.Bindable;
+import org.springframework.boot.context.properties.bind.Binder;
+import org.springframework.boot.context.properties.source.MapConfigurationPropertySource;
 import org.springframework.http.HttpHeaders;
 import org.springframework.test.web.reactive.server.WebTestClient;
 
 import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -21,9 +25,19 @@ class PlatformFeaturesControllerTest {
     private static final String SESSION = "Bearer " + TestJwt.session("member-42");
 
     private WebTestClient client(SearchMode mode) {
+        return client(mode, new PlatformProductsProperties());
+    }
+
+    private WebTestClient client(SearchMode mode, PlatformProductsProperties products) {
         SearchProperties properties = new SearchProperties();
         properties.setMode(mode);
-        return WebTestClient.bindToController(new PlatformFeaturesController(properties)).build();
+        return WebTestClient.bindToController(new PlatformFeaturesController(properties, products)).build();
+    }
+
+    /** yml과 같은 경로 — Spring 바인더가 env 콤마 문자열을 목록으로 쪼개 setter에 넘긴다. */
+    private static PlatformProductsProperties bound(String env) {
+        Binder binder = new Binder(new MapConfigurationPropertySource(Map.of("platform.products", env)));
+        return binder.bindOrCreate("platform", Bindable.of(PlatformProductsProperties.class));
     }
 
     @Test
@@ -92,5 +106,60 @@ class PlatformFeaturesControllerTest {
     void 스코프_규칙도_features를_PAT에_열지_않는다() {
         assertThat(PatScopeRules.evaluate("/api/platform/features", "GET"))
                 .isInstanceOf(PatScopeRules.Rule.Forbidden.class);
+    }
+
+    /** 기본값(설정 없음)은 네 제품 전부 설치다 — 지금까지의 배포와 같은 상태. */
+    @Test
+    void products_기본은_전부_true() {
+        client(SearchMode.LITE).get().uri("/api/platform/features")
+                .header(HttpHeaders.AUTHORIZATION, SESSION)
+                .exchange()
+                .expectStatus().isOk()
+                .expectBody()
+                .jsonPath("$.products.wiki").isEqualTo(true)
+                .jsonPath("$.products.alm").isEqualTo(true)
+                .jsonPath("$.products.board").isEqualTo(true)
+                .jsonPath("$.products.agent").isEqualTo(true)
+                // products가 붙어도 search 블록은 그대로다.
+                .jsonPath("$.search.mode").isEqualTo("lite");
+    }
+
+    /** 스펙 S3 — ALM을 뺀 설치면 위키가 이슈 카드 조회를 아예 하지 않는다. */
+    @Test
+    void PLATFORM_PRODUCTS가_wiki_board면_alm과_agent는_false() {
+        client(SearchMode.LITE, bound("wiki,board")).get().uri("/api/platform/features")
+                .header(HttpHeaders.AUTHORIZATION, SESSION)
+                .exchange()
+                .expectStatus().isOk()
+                .expectBody()
+                .jsonPath("$.products.wiki").isEqualTo(true)
+                .jsonPath("$.products.alm").isEqualTo(false)
+                .jsonPath("$.products.board").isEqualTo(true)
+                .jsonPath("$.products.agent").isEqualTo(false);
+    }
+
+    /** 공백·대소문자는 관대하게, 모르는 이름은 버린다(경고 로그). 키는 항상 넷뿐이다. */
+    @Test
+    void 쓰레기_값과_공백_대소문자를_관대하게_읽는다() {
+        PlatformProductsProperties products = bound(" Wiki , ALM ,jira,, confluence ");
+        assertThat(products.getInstalled())
+                .containsExactly(
+                        Map.entry("wiki", true), Map.entry("alm", true),
+                        Map.entry("board", false), Map.entry("agent", false));
+    }
+
+    /** 빈 env 하나로 모든 제품이 조용히 꺼지지 않는다 — 빈 값은 설정 누락으로 보고 기본(전부)이다. */
+    @Test
+    void 빈_값은_기본값_전부로_본다() {
+        assertThat(bound("").getInstalled()).containsOnly(
+                Map.entry("wiki", true), Map.entry("alm", true),
+                Map.entry("board", true), Map.entry("agent", true));
+        assertThat(bound(" , ").getInstalled()).containsValues(true).doesNotContainValue(false);
+    }
+
+    /** 모르는 이름만 있으면 그 이름들은 버리고 아무것도 켜지 않는다(빈 값과 구분 — 오타는 기본값으로 덮지 않는다). */
+    @Test
+    void 모르는_이름만_있으면_전부_false() {
+        assertThat(bound("jira").getInstalled()).doesNotContainValue(true).hasSize(4);
     }
 }
