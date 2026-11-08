@@ -111,6 +111,26 @@ class PatExchangeWebFilterTest {
         assertThat(recorded.getBody().readUtf8()).contains(PAT);
     }
 
+    /** 회전 중 AGENT_INTERNAL_SECRET=신,구 — 수신 허용 목록과 같은 변수지만 발신은 첫 항목만(목록째 보내면 403). */
+    @Test
+    void commaListSecretSendsOnlyFirstItem() throws Exception {
+        authServer.enqueue(exchangeOk(JWT, 300));
+
+        clientWithSecret(" ,new-secret,old-secret").get().uri("/api/me")
+                .header(HttpHeaders.AUTHORIZATION, "Bearer " + PAT)
+                .exchange()
+                .expectStatus().isOk();
+
+        assertThat(authServer.takeRequest().getHeader("X-Internal-Secret")).isEqualTo("new-secret");
+    }
+
+    @Test
+    void commaOnlySecretDisablesExchange() {
+        PatExchangeClient exchangeClient = new PatExchangeClient(
+                WebClient.builder(), authServer.url("/").toString(), " , ");
+        assertThat(exchangeClient.isEnabled()).isFalse();
+    }
+
     @Test
     void bearerSchemeIsCaseInsensitive() {
         authServer.enqueue(exchangeOk(JWT, 300));

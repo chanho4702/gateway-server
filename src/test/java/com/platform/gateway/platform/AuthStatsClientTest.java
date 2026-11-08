@@ -83,4 +83,19 @@ class AuthStatsClientTest {
 
         assertThat(authServer.getRequestCount()).isZero();
     }
+
+    @Test
+    void 콤마_목록_시크릿이면_첫_항목만_보낸다() throws Exception {
+        authServer.enqueue(ok());
+
+        client("new-secret,old-secret").stats().block();
+
+        assertThat(authServer.takeRequest().getHeader("X-Internal-Secret")).isEqualTo("new-secret");
+    }
+
+    @Test
+    void 콤마뿐인_시크릿은_호출하지_않는다() {
+        assertThat(client(" , ").stats().block()).isNull();
+        assertThat(authServer.getRequestCount()).isZero();
+    }
 }

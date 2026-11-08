@@ -1,5 +1,6 @@
 package com.platform.gateway.platform;
 
+import com.platform.gateway.config.InternalSecrets;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -46,7 +47,7 @@ public class AuthStatsClient {
     AuthStatsClient(WebClient.Builder builder, String authServerBaseUri, String internalSecret,
                     Duration timeout, Duration cacheTtl) {
         this.webClient = builder.baseUrl(authServerBaseUri).build();
-        this.internalSecret = internalSecret == null ? "" : internalSecret.trim();
+        this.internalSecret = InternalSecrets.firstToken(internalSecret);
         this.timeout = timeout;
         this.cached = Mono.defer(this::fetch)
                 .cache(value -> cacheTtl, error -> FAILURE_TTL, () -> FAILURE_TTL);

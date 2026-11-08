@@ -2,6 +2,7 @@ package com.platform.gateway.filter;
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import jakarta.annotation.PostConstruct;
+import com.platform.gateway.config.InternalSecrets;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -53,7 +54,7 @@ public class PatExchangeClient {
     PatExchangeClient(WebClient.Builder builder, String authServerBaseUri, String internalSecret,
                       Duration timeout) {
         this.webClient = builder.baseUrl(authServerBaseUri).build();
-        this.internalSecret = internalSecret == null ? "" : internalSecret.trim();
+        this.internalSecret = InternalSecrets.firstToken(internalSecret);
         this.timeout = timeout;
     }
 
